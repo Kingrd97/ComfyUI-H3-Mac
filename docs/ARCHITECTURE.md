@@ -1,10 +1,10 @@
 # Architecture
 
 ```text
-ComfyUI graph
+ComfyUI graph + native en/zh locale data
    │ IMAGE / AUDIO / local media paths
    ▼
-H3 reference-chain nodes ── preserves user-defined ordering
+H3 shot-prompt + reference-chain nodes ── preserves user-defined ordering
    │ H3Request
    ▼
 h3_bridge runner
@@ -18,12 +18,16 @@ antirez/h3.c ── Metal inference ── FFmpeg MP4
    │
    ▼
 ComfyUI native VIDEO output and preview
+   │ completed shot job directories
+   ▼
+Storyboard assembler ── validated paths ── FFmpeg stream-copy MP4
 ```
 
 ## Boundaries
 
 - ComfyUI owns graph composition and reusable creative workflows.
 - The bridge owns input materialization, validation, scheduling and job persistence.
+- The storyboard layer owns structured prompt composition and ordered assembly of completed jobs; it never runs model inference itself.
 - h3.c owns model loading, conditioning, inference, decoding and MP4 generation.
 - Model acquisition is separate because model terms and storage needs differ from source code.
 
@@ -34,6 +38,7 @@ ComfyUI native VIDEO output and preview
 - Runtime/model/output/config files are excluded from Git.
 - A cancelled job terminates the entire child process group.
 - Ordered references are immutable tuples, so downstream nodes cannot mutate an earlier branch.
+- Storyboard inputs must resolve below the configured H3 jobs directory, preventing arbitrary local files from being read through the node.
 
 ## Backend extension
 

@@ -1,0 +1,100 @@
+{
+  "H3BuildShotPrompt": {
+    "display_name": "H3 · Build shot prompt",
+    "description": "Turn one storyboard shot into a structured H3 prompt.",
+    "inputs": {
+      "subject": {"name": "Subject and continuity", "tooltip": "Who or what must remain recognizable across the shot."},
+      "action_timeline": {"name": "Action timeline", "tooltip": "Describe visible actions in time order, for example 0–2s and 2–5s."},
+      "environment": {"name": "Environment and physical interaction", "tooltip": "Location, weather, water, props, contact, and other physical details."},
+      "camera": {"name": "Camera and framing", "tooltip": "Shot size, camera movement, angle, and whether cuts are allowed."},
+      "look_and_sound": {"name": "Look, lighting, and sound", "tooltip": "Visual realism, light, mood, dialogue, and ambient sound."},
+      "avoid": {"name": "Avoid", "tooltip": "Identity, anatomy, motion, text, or editing failures to avoid."}
+    },
+    "outputs": {
+      "0": {"name": "Shot prompt", "tooltip": "Connect this to Prompt on H3 Generate Video."}
+    }
+  },
+  "H3EmptyReferences": {
+    "display_name": "H3 · New reference list",
+    "description": "Start an ordered Ref2VA reference list. Order changes the result.",
+    "outputs": {
+      "0": {"name": "References", "tooltip": "An empty ordered reference list."}
+    }
+  },
+  "H3AddImageReference": {
+    "display_name": "H3 · Add image reference",
+    "description": "Append one image to the ordered Ref2VA reference list.",
+    "inputs": {
+      "references": {"name": "Existing references", "tooltip": "References already added; their order is preserved."},
+      "image": {"name": "Image", "tooltip": "The next subject, identity, style, or environment reference."}
+    },
+    "outputs": {
+      "0": {"name": "References", "tooltip": "The list with this image appended."}
+    }
+  },
+  "H3AddAudioReference": {
+    "display_name": "H3 · Add audio reference",
+    "description": "Append one audio clip to the ordered Ref2VA reference list.",
+    "inputs": {
+      "references": {"name": "Existing references", "tooltip": "References already added; their order is preserved."},
+      "audio": {"name": "Audio", "tooltip": "The next voice, music, or environmental-audio reference."}
+    },
+    "outputs": {
+      "0": {"name": "References", "tooltip": "The list with this audio clip appended."}
+    }
+  },
+  "H3AddMediaFileReference": {
+    "display_name": "H3 · Add local media reference",
+    "description": "Append a local image, video, or audio file in a precise order.",
+    "inputs": {
+      "references": {"name": "Existing references", "tooltip": "References already added; their order is preserved."},
+      "kind": {"name": "Media type", "tooltip": "Choose how h3.c should interpret the local file."},
+      "path": {"name": "Media file path", "tooltip": "Absolute path to the local image, audio, or video."},
+      "audio_path": {"name": "Separate audio path (optional)", "tooltip": "Required only for video_audio with a separate sound file."}
+    },
+    "outputs": {
+      "0": {"name": "References", "tooltip": "The list with this media reference appended."}
+    }
+  },
+  "H3GenerateVideo": {
+    "display_name": "H3 · Generate video (Metal)",
+    "description": "Generate an MP4 through h3.c Metal inference on Apple Silicon.",
+    "inputs": {
+      "prompt": {"name": "Prompt", "tooltip": "Describe identity, actions over time, environment, camera, look, sound, and unwanted failures."},
+      "references": {"name": "References", "tooltip": "Ordered Ref2VA materials. Do not combine these with first/last frames."},
+      "first_frame": {"name": "First frame (optional)", "tooltip": "FL2VA opening-frame anchor. Leave references empty when using it."},
+      "last_frame": {"name": "Last frame (optional)", "tooltip": "FL2VA closing-frame anchor. Leave references empty when using it."},
+      "task": {"name": "Model task", "tooltip": "Use Ref2VA for ordered references, or FL2VA for text/first/last frame generation."},
+      "width": {"name": "Width", "tooltip": "Output width; must be a multiple of 16."},
+      "height": {"name": "Height", "tooltip": "Output height; must be a multiple of 16."},
+      "seconds": {"name": "Duration (seconds)", "tooltip": "Duration of this shot at 24 FPS."},
+      "quality_profile": {"name": "Quality profile", "tooltip": "Preview is fastest; quality is the normal final; reference is a slow diagnostic oracle."},
+      "resource_profile": {"name": "Resource profile", "tooltip": "Low and auto are foreground-friendly; max is for an idle Mac."},
+      "seed": {"name": "Seed", "tooltip": "Keep the same seed while refining a shot for more comparable results."},
+      "reuse_completed": {"name": "Reuse identical completed job", "tooltip": "Return a matching completed shot instead of generating it again."}
+    },
+    "outputs": {
+      "0": {"name": "Video", "tooltip": "Generated MP4 video."},
+      "1": {"name": "Job directory", "tooltip": "Connect this to a numbered input on Assemble Storyboard MP4."},
+      "2": {"name": "Run summary", "tooltip": "Job ID, elapsed time, profile, and output path."}
+    }
+  },
+  "H3AssembleStoryboard": {
+    "display_name": "H3 · Assemble storyboard MP4",
+    "description": "Join 2–6 completed H3 shots in order without another generation pass.",
+    "inputs": {
+      "title": {"name": "Project title", "tooltip": "Saved in storyboard metadata."},
+      "shot_1_job": {"name": "Shot 1 job directory", "tooltip": "Connect Job directory from the first H3 Generate Video node."},
+      "shot_2_job": {"name": "Shot 2 job directory", "tooltip": "Connect Job directory from the second H3 Generate Video node."},
+      "shot_3_job": {"name": "Shot 3 job directory (optional)", "tooltip": "Third completed shot."},
+      "shot_4_job": {"name": "Shot 4 job directory (optional)", "tooltip": "Fourth completed shot."},
+      "shot_5_job": {"name": "Shot 5 job directory (optional)", "tooltip": "Fifth completed shot."},
+      "shot_6_job": {"name": "Shot 6 job directory (optional)", "tooltip": "Sixth completed shot."}
+    },
+    "outputs": {
+      "0": {"name": "Final video", "tooltip": "The assembled MP4 with hard cuts between shots."},
+      "1": {"name": "Storyboard directory", "tooltip": "Contains metadata, FFmpeg log, and the final MP4."},
+      "2": {"name": "Assembly summary", "tooltip": "Storyboard ID, reuse state, and output path."}
+    }
+  }
+}

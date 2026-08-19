@@ -1,0 +1,218 @@
+{
+  "last_node_id": 9,
+  "last_link_id": 8,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "MarkdownNote",
+      "pos": [-760, -430],
+      "size": [680, 310],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "# H3 two-shot storyboard / H3 双镜头分镜\n\n1. Choose the subject image below. / 在下方选择主体图片。\n2. Fill the six fields on each shot card. / 分别填写每张镜头卡的六个栏目。\n3. Keep both generators at the same width, height, and quality. / 两个生成节点保持相同宽高和画质。\n4. Start with preview + low, then use quality + auto. / 先用 preview + low，确认后改 quality + auto。\n5. The final node joins the completed shots into one MP4. / 最后一个节点会把已完成镜头合并为一个 MP4。"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "LoadImage",
+      "pos": [-760, -20],
+      "size": [315, 314],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [2], "slot_index": 0},
+        {"name": "MASK", "type": "MASK", "links": null}
+      ],
+      "properties": {"Node name for S&R": "LoadImage"},
+      "widgets_values": ["", "image"]
+    },
+    {
+      "id": 3,
+      "type": "H3EmptyReferences",
+      "pos": [-760, 380],
+      "size": [260, 70],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "References", "type": "H3_REFERENCES", "links": [1], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "H3EmptyReferences"},
+      "widgets_values": []
+    },
+    {
+      "id": 4,
+      "type": "H3AddImageReference",
+      "pos": [-390, 180],
+      "size": [300, 110],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "references", "type": "H3_REFERENCES", "link": 1},
+        {"name": "image", "type": "IMAGE", "link": 2}
+      ],
+      "outputs": [
+        {"name": "References", "type": "H3_REFERENCES", "links": [4, 6], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "H3AddImageReference"},
+      "widgets_values": []
+    },
+    {
+      "id": 5,
+      "type": "H3BuildShotPrompt",
+      "pos": [30, -430],
+      "size": [430, 520],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "Shot prompt", "type": "STRING", "links": [3], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "H3BuildShotPrompt"},
+      "widgets_values": [
+        "The same subject as Picture 1, stable identity and appearance.",
+        "0–1s: establish the subject. 1–3s: the subject begins a clear action.",
+        "A physically believable environment with visible interaction.",
+        "Wide establishing shot, slow stable camera movement, one continuous take.",
+        "Photorealistic detail, natural light, coherent ambient sound.",
+        "No identity drift, frozen pose, extra limbs, warped anatomy, text, watermark, or abrupt cut."
+      ]
+    },
+    {
+      "id": 6,
+      "type": "H3GenerateVideo",
+      "pos": [520, -430],
+      "size": [390, 500],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {"name": "prompt", "type": "STRING", "link": 3},
+        {"name": "references", "type": "H3_REFERENCES", "link": 4}
+      ],
+      "outputs": [
+        {"name": "Video", "type": "VIDEO", "links": null, "slot_index": 0},
+        {"name": "Job directory", "type": "STRING", "links": [7], "slot_index": 1},
+        {"name": "Run summary", "type": "STRING", "links": null, "slot_index": 2}
+      ],
+      "properties": {"Node name for S&R": "H3GenerateVideo"},
+      "widgets_values": [
+        "",
+        "Ref2VA",
+        640,
+        384,
+        3.0,
+        "preview",
+        "low",
+        42,
+        "fixed",
+        true
+      ]
+    },
+    {
+      "id": 7,
+      "type": "H3BuildShotPrompt",
+      "pos": [30, 180],
+      "size": [430, 520],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "Shot prompt", "type": "STRING", "links": [5], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "H3BuildShotPrompt"},
+      "widgets_values": [
+        "The same subject as Picture 1, exactly matching the previous shot.",
+        "0–2s: continue the main action with stronger movement. 2–3s: finish with a clear reaction.",
+        "The same environment, with physically believable contact and motion.",
+        "Medium tracking shot moving into a close-up, one continuous take.",
+        "Photorealistic detail, consistent light, coherent ambient sound.",
+        "No identity drift, frozen pose, extra limbs, warped anatomy, text, watermark, or abrupt cut."
+      ]
+    },
+    {
+      "id": 8,
+      "type": "H3GenerateVideo",
+      "pos": [520, 180],
+      "size": [390, 500],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {"name": "prompt", "type": "STRING", "link": 5},
+        {"name": "references", "type": "H3_REFERENCES", "link": 6}
+      ],
+      "outputs": [
+        {"name": "Video", "type": "VIDEO", "links": null, "slot_index": 0},
+        {"name": "Job directory", "type": "STRING", "links": [8], "slot_index": 1},
+        {"name": "Run summary", "type": "STRING", "links": null, "slot_index": 2}
+      ],
+      "properties": {"Node name for S&R": "H3GenerateVideo"},
+      "widgets_values": [
+        "",
+        "Ref2VA",
+        640,
+        384,
+        3.0,
+        "preview",
+        "low",
+        43,
+        "fixed",
+        true
+      ]
+    },
+    {
+      "id": 9,
+      "type": "H3AssembleStoryboard",
+      "pos": [1020, -110],
+      "size": [410, 420],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {"name": "shot_1_job", "type": "STRING", "link": 7},
+        {"name": "shot_2_job", "type": "STRING", "link": 8}
+      ],
+      "outputs": [
+        {"name": "Final video", "type": "VIDEO", "links": null, "slot_index": 0},
+        {"name": "Storyboard directory", "type": "STRING", "links": null, "slot_index": 1},
+        {"name": "Assembly summary", "type": "STRING", "links": null, "slot_index": 2}
+      ],
+      "properties": {"Node name for S&R": "H3AssembleStoryboard"},
+      "widgets_values": ["My first H3 storyboard", "", "", "", "", "", ""]
+    }
+  ],
+  "links": [
+    [1, 3, 0, 4, 0, "H3_REFERENCES"],
+    [2, 2, 0, 4, 1, "IMAGE"],
+    [3, 5, 0, 6, 0, "STRING"],
+    [4, 4, 0, 6, 1, "H3_REFERENCES"],
+    [5, 7, 0, 8, 0, "STRING"],
+    [6, 4, 0, 8, 1, "H3_REFERENCES"],
+    [7, 6, 1, 9, 0, "STRING"],
+    [8, 8, 1, 9, 1, "STRING"]
+  ],
+  "groups": [
+    {"id": 1, "title": "1. References / 参考素材", "bounding": [-790, -70, 730, 570], "color": "#3f789e", "font_size": 24, "flags": {}},
+    {"id": 2, "title": "2. Shot 1 / 镜头 1", "bounding": [0, -480, 940, 590], "color": "#8a6d3b", "font_size": 24, "flags": {}},
+    {"id": 3, "title": "3. Shot 2 / 镜头 2", "bounding": [0, 130, 940, 590], "color": "#6b8e23", "font_size": 24, "flags": {}},
+    {"id": 4, "title": "4. Final MP4 / 最终视频", "bounding": [990, -160, 470, 520], "color": "#8b5a8c", "font_size": 24, "flags": {}}
+  ],
+  "config": {},
+  "extra": {
+    "ds": {"scale": 0.78, "offset": [860, 520]},
+    "node_versions": {"comfy-core": "0.33.0", "ComfyUI-H3-Mac": "0.2.0"}
+  },
+  "version": 0.4
+}

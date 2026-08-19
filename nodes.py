@@ -9,7 +9,14 @@ import comfy.model_management
 import comfy.utils
 from comfy_api.latest import ComfyExtension, Input, InputImpl, io, ui
 
-from .h3_bridge import H3Reference, H3Request, H3Runner, load_config
+from .h3_bridge import (
+    H3Reference,
+    H3Request,
+    H3Runner,
+    assemble_storyboard,
+    build_shot_prompt,
+    load_config,
+)
 from .h3_bridge.media import save_audio, save_image_tensor, validated_media_path
 
 
@@ -22,10 +29,10 @@ class H3EmptyReferences(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="H3EmptyReferences",
-            display_name="H3 · 新建参考素材列表",
+            display_name="H3 · New reference list",
             category=CATEGORY,
-            description="建立有顺序的参考素材列表。素材顺序会影响 Ref2VA 的结果。",
-            outputs=[H3References.Output("references", display_name="参考素材")],
+            description="Start an ordered Ref2VA reference list. Order changes the result.",
+            outputs=[H3References.Output("references", display_name="References")],
         )
 
     @classmethod
@@ -38,13 +45,13 @@ class H3AddImageReference(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="H3AddImageReference",
-            display_name="H3 · 添加图片参考",
+            display_name="H3 · Add image reference",
             category=CATEGORY,
             inputs=[
-                H3References.Input("references", display_name="已有参考素材"),
-                io.Image.Input("image", display_name="图片"),
+                H3References.Input("references", display_name="Existing references"),
+                io.Image.Input("image", display_name="Image"),
             ],
-            outputs=[H3References.Output("references", display_name="参考素材")],
+            outputs=[H3References.Output("references", display_name="References")],
         )
 
     @classmethod
@@ -59,13 +66,13 @@ class H3AddAudioReference(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="H3AddAudioReference",
-            display_name="H3 · 添加音频参考",
+            display_name="H3 · Add audio reference",
             category=CATEGORY,
             inputs=[
-                H3References.Input("references", display_name="已有参考素材"),
-                io.Audio.Input("audio", display_name="音频"),
+                H3References.Input("references", display_name="Existing references"),
+                io.Audio.Input("audio", display_name="Audio"),
             ],
-            outputs=[H3References.Output("references", display_name="参考素材")],
+            outputs=[H3References.Output("references", display_name="References")],
         )
 
     @classmethod
@@ -80,27 +87,27 @@ class H3AddMediaFileReference(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="H3AddMediaFileReference",
-            display_name="H3 · 添加本地媒体参考",
+            display_name="H3 · Add local media reference",
             category=CATEGORY,
-            description="添加本地视频或音频路径。video_audio 模式需同时填写独立音轨路径。",
+            description="Append a local image, video, or audio file in a precise order.",
             inputs=[
-                H3References.Input("references", display_name="已有参考素材"),
+                H3References.Input("references", display_name="Existing references"),
                 io.Combo.Input(
                     "kind",
                     options=["silent_video", "video", "video_audio", "audio", "image"],
                     default="video",
-                    display_name="素材类型",
+                    display_name="Media type",
                 ),
-                io.String.Input("path", display_name="媒体文件路径", default=""),
+                io.String.Input("path", display_name="Media file path", default=""),
                 io.String.Input(
                     "audio_path",
-                    display_name="独立音轨路径（可选）",
+                    display_name="Separate audio path (optional)",
                     default="",
                     optional=True,
                     advanced=True,
                 ),
             ],
-            outputs=[H3References.Output("references", display_name="参考素材")],
+            outputs=[H3References.Output("references", display_name="References")],
         )
 
     @classmethod
@@ -108,9 +115,82 @@ class H3AddMediaFileReference(io.ComfyNode):
         media_path = validated_media_path(path)
         extra_audio = validated_media_path(audio_path) if audio_path.strip() else None
         if kind == "video_audio" and extra_audio is None:
-            raise ValueError("video_audio 模式需要填写独立音轨路径。")
+            raise ValueError("video_audio requires a separate audio path.")
         return io.NodeOutput(
             tuple(references) + (H3Reference(kind, media_path, extra_audio),)
+        )
+
+
+class H3BuildShotPrompt(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3BuildShotPrompt",
+            display_name="H3 · Build shot prompt",
+            category=CATEGORY,
+            description="Turn a storyboard shot into a structured H3 prompt.",
+            inputs=[
+                io.String.Input(
+                    "subject",
+                    display_name="Subject and continuity",
+                    multiline=True,
+                    default="The same subject as the reference images, with stable identity and appearance.",
+                ),
+                io.String.Input(
+                    "action_timeline",
+                    display_name="Action timeline",
+                    multiline=True,
+                    default="0–2s: establish the action. 2–5s: clear continuous movement and interaction.",
+                ),
+                io.String.Input(
+                    "environment",
+                    display_name="Environment and physical interaction",
+                    multiline=True,
+                    default="Natural environment with physically plausible motion and contact.",
+                ),
+                io.String.Input(
+                    "camera",
+                    display_name="Camera and framing",
+                    multiline=True,
+                    default="Medium tracking shot, stable framing, one continuous take.",
+                ),
+                io.String.Input(
+                    "look_and_sound",
+                    display_name="Look, lighting, and sound",
+                    multiline=True,
+                    default="Photorealistic detail, natural light, coherent ambient sound.",
+                ),
+                io.String.Input(
+                    "avoid",
+                    display_name="Avoid",
+                    multiline=True,
+                    default="No identity drift, frozen pose, extra limbs, warped anatomy, text, watermark, or abrupt cut.",
+                    optional=True,
+                    advanced=True,
+                ),
+            ],
+            outputs=[io.String.Output("prompt", display_name="Shot prompt")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        subject,
+        action_timeline,
+        environment,
+        camera,
+        look_and_sound,
+        avoid="",
+    ):
+        return io.NodeOutput(
+            build_shot_prompt(
+                subject,
+                action_timeline,
+                environment,
+                camera,
+                look_and_sound,
+                avoid,
+            )
         )
 
 
@@ -119,35 +199,35 @@ class H3GenerateVideo(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="H3GenerateVideo",
-            display_name="H3 · 生成视频（Metal）",
+            display_name="H3 · Generate video (Metal)",
             category=CATEGORY,
-            description="通过 h3.c 在 Apple Silicon 上使用 Metal 生成 MP4。",
+            description="Generate an MP4 through h3.c Metal inference on Apple Silicon.",
             inputs=[
                 io.String.Input(
                     "prompt",
-                    display_name="提示词",
+                    display_name="Prompt",
                     multiline=True,
                     dynamic_prompts=True,
                     default="A cinematic, natural video with clear subject motion and stable identity.",
                 ),
-                H3References.Input("references", display_name="参考素材", optional=True),
-                io.Image.Input("first_frame", display_name="首帧（可选）", optional=True),
-                io.Image.Input("last_frame", display_name="尾帧（可选）", optional=True),
-                io.Combo.Input("task", options=["Ref2VA", "FL2VA"], default="Ref2VA", display_name="模型任务"),
-                io.Int.Input("width", default=640, min=256, max=1536, step=16, display_name="宽度"),
-                io.Int.Input("height", default=384, min=256, max=1536, step=16, display_name="高度"),
-                io.Float.Input("seconds", default=5.0, min=1.0, max=30.0, step=0.5, display_name="时长（秒）"),
+                H3References.Input("references", display_name="References", optional=True),
+                io.Image.Input("first_frame", display_name="First frame (optional)", optional=True),
+                io.Image.Input("last_frame", display_name="Last frame (optional)", optional=True),
+                io.Combo.Input("task", options=["Ref2VA", "FL2VA"], default="Ref2VA", display_name="Model task"),
+                io.Int.Input("width", default=640, min=256, max=1536, step=16, display_name="Width"),
+                io.Int.Input("height", default=384, min=256, max=1536, step=16, display_name="Height"),
+                io.Float.Input("seconds", default=5.0, min=1.0, max=30.0, step=0.5, display_name="Duration (seconds)"),
                 io.Combo.Input(
                     "quality_profile",
                     options=["preview", "balanced", "quality", "reference"],
                     default="quality",
-                    display_name="画质档位",
+                    display_name="Quality profile",
                 ),
                 io.Combo.Input(
                     "resource_profile",
                     options=["low", "auto", "max"],
                     default="auto",
-                    display_name="资源档位",
+                    display_name="Resource profile",
                 ),
                 io.Int.Input(
                     "seed",
@@ -155,22 +235,22 @@ class H3GenerateVideo(io.ComfyNode):
                     min=0,
                     max=0x7FFFFFFF,
                     control_after_generate=True,
-                    display_name="随机种子",
+                    display_name="Seed",
                 ),
                 io.Boolean.Input(
                     "reuse_completed",
                     default=True,
-                    label_on="复用",
-                    label_off="重跑",
-                    display_name="复用相同的已完成任务",
+                    label_on="Reuse",
+                    label_off="Rerun",
+                    display_name="Reuse identical completed job",
                     advanced=True,
                 ),
             ],
             hidden=[io.Hidden.unique_id],
             outputs=[
-                io.Video.Output("video", display_name="视频"),
-                io.String.Output("job_dir", display_name="任务目录"),
-                io.String.Output("summary", display_name="运行摘要"),
+                io.Video.Output("video", display_name="Video"),
+                io.String.Output("job_dir", display_name="Job directory"),
+                io.String.Output("summary", display_name="Run summary"),
             ],
             is_output_node=True,
         )
@@ -225,8 +305,8 @@ class H3GenerateVideo(io.ComfyNode):
         video = InputImpl.VideoFromFile(str(result.output_path))
         relative = result.output_path.relative_to(output_root)
         summary = (
-            f"任务 {result.job_id} 完成；耗时 {result.elapsed_seconds:.1f} 秒；"
-            f"模式 {resource_profile}/{quality_profile}；输出 {relative}"
+            f"job={result.job_id} | elapsed={result.elapsed_seconds:.1f}s | "
+            f"profile={resource_profile}/{quality_profile} | output={relative}"
         )
         return io.NodeOutput(
             video,
@@ -238,15 +318,106 @@ class H3GenerateVideo(io.ComfyNode):
         )
 
 
+class H3AssembleStoryboard(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3AssembleStoryboard",
+            display_name="H3 · Assemble storyboard MP4",
+            category=CATEGORY,
+            description="Join 2–6 completed H3 shots in order without another generation pass.",
+            inputs=[
+                io.String.Input("title", display_name="Project title", default="My H3 storyboard"),
+                io.String.Input("shot_1_job", display_name="Shot 1 job directory"),
+                io.String.Input("shot_2_job", display_name="Shot 2 job directory"),
+                io.String.Input(
+                    "shot_3_job",
+                    display_name="Shot 3 job directory (optional)",
+                    default="",
+                    optional=True,
+                ),
+                io.String.Input(
+                    "shot_4_job",
+                    display_name="Shot 4 job directory (optional)",
+                    default="",
+                    optional=True,
+                ),
+                io.String.Input(
+                    "shot_5_job",
+                    display_name="Shot 5 job directory (optional)",
+                    default="",
+                    optional=True,
+                    advanced=True,
+                ),
+                io.String.Input(
+                    "shot_6_job",
+                    display_name="Shot 6 job directory (optional)",
+                    default="",
+                    optional=True,
+                    advanced=True,
+                ),
+            ],
+            outputs=[
+                io.Video.Output("video", display_name="Final video"),
+                io.String.Output("project_dir", display_name="Storyboard directory"),
+                io.String.Output("summary", display_name="Assembly summary"),
+            ],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        title,
+        shot_1_job,
+        shot_2_job,
+        shot_3_job="",
+        shot_4_job="",
+        shot_5_job="",
+        shot_6_job="",
+    ):
+        config = load_config()
+        output_root = Path(folder_paths.get_output_directory()).resolve()
+        result = assemble_storyboard(
+            [
+                shot_1_job,
+                shot_2_job,
+                shot_3_job,
+                shot_4_job,
+                shot_5_job,
+                shot_6_job,
+            ],
+            output_root=output_root,
+            jobs_subdir=config.output_subdir,
+            title=title,
+        )
+        video = InputImpl.VideoFromFile(str(result.output_path))
+        relative = result.output_path.relative_to(output_root)
+        summary = (
+            f"storyboard={result.storyboard_id} | reused={str(result.reused).lower()} | "
+            f"output={relative}"
+        )
+        return io.NodeOutput(
+            video,
+            str(result.project_dir),
+            summary,
+            ui=ui.PreviewVideo(
+                [ui.SavedResult(relative.name, str(relative.parent), io.FolderType.output)]
+            ),
+        )
+
+
 class H3MacExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [
+            H3BuildShotPrompt,
             H3EmptyReferences,
             H3AddImageReference,
             H3AddAudioReference,
             H3AddMediaFileReference,
             H3GenerateVideo,
+            H3AssembleStoryboard,
         ]
 
 

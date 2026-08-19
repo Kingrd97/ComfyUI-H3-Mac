@@ -12,6 +12,8 @@
 
 `Doctor.command` 只检查环境，不会加载大模型。
 
+启动后可在 `Comfy > Locale > Language` 选择“中文”。第一次使用建议从 `工作流 > 浏览模板 > ComfyUI-H3-Mac > H3_Beginner_2_Shot_Storyboard` 开始，不需要自己从空白画布搭节点。
+
 ## 2. 素材顺序
 
 h3.c 不理解文件名的语义，只按接入顺序看到 `<Picture 1>`、`<Picture 2>`。建议：
@@ -39,6 +41,8 @@ h3.c 不理解文件名的语义，只按接入顺序看到 `<Picture 1>`、`<Pi
 ```
 
 示例见 `examples/prompt_cat_stream.txt`。
+
+也可以直接使用 `H3 · 编写单镜头提示词`，把上述内容分栏填写；多镜头编排和最终 MP4 合并见 [分镜创作教程](STORYBOARD_zh-CN.md)。
 
 ## 4. 两阶段创作
 

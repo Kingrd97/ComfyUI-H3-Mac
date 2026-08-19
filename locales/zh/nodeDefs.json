@@ -1,0 +1,100 @@
+{
+  "H3BuildShotPrompt": {
+    "display_name": "H3 · 编写单镜头提示词",
+    "description": "把一个分镜拆成结构清晰的 H3 提示词。",
+    "inputs": {
+      "subject": {"name": "主体与连续性", "tooltip": "本镜头中必须保持一致、可识别的人物、动物或物体特征。"},
+      "action_timeline": {"name": "动作时间线", "tooltip": "按时间顺序写可见动作，例如 0–2 秒、2–5 秒分别发生什么。"},
+      "environment": {"name": "环境与物理互动", "tooltip": "地点、天气、水、道具、接触和其他物理细节。"},
+      "camera": {"name": "镜头与构图", "tooltip": "景别、运镜、角度，以及是否允许切镜。"},
+      "look_and_sound": {"name": "画面、光线与声音", "tooltip": "真实感、光线、氛围、对白和环境声。"},
+      "avoid": {"name": "需要避免", "tooltip": "不希望出现的身份、肢体、动作、文字或剪辑问题。"}
+    },
+    "outputs": {
+      "0": {"name": "单镜头提示词", "tooltip": "连接到“H3 · 生成视频”的提示词输入。"}
+    }
+  },
+  "H3EmptyReferences": {
+    "display_name": "H3 · 新建参考素材列表",
+    "description": "建立有顺序的 Ref2VA 参考素材列表；顺序会影响生成结果。",
+    "outputs": {
+      "0": {"name": "参考素材", "tooltip": "一个空的有序参考素材列表。"}
+    }
+  },
+  "H3AddImageReference": {
+    "display_name": "H3 · 添加图片参考",
+    "description": "把一张图片追加到有序 Ref2VA 参考素材列表。",
+    "inputs": {
+      "references": {"name": "已有参考素材", "tooltip": "已经加入的素材，原顺序保持不变。"},
+      "image": {"name": "图片", "tooltip": "下一张主体、身份、风格或环境参考图。"}
+    },
+    "outputs": {
+      "0": {"name": "参考素材", "tooltip": "已追加这张图片的素材列表。"}
+    }
+  },
+  "H3AddAudioReference": {
+    "display_name": "H3 · 添加音频参考",
+    "description": "把一段音频追加到有序 Ref2VA 参考素材列表。",
+    "inputs": {
+      "references": {"name": "已有参考素材", "tooltip": "已经加入的素材，原顺序保持不变。"},
+      "audio": {"name": "音频", "tooltip": "下一段人声、音乐或环境音参考。"}
+    },
+    "outputs": {
+      "0": {"name": "参考素材", "tooltip": "已追加这段音频的素材列表。"}
+    }
+  },
+  "H3AddMediaFileReference": {
+    "display_name": "H3 · 添加本地媒体参考",
+    "description": "按明确顺序追加本地图片、视频或音频文件。",
+    "inputs": {
+      "references": {"name": "已有参考素材", "tooltip": "已经加入的素材，原顺序保持不变。"},
+      "kind": {"name": "素材类型", "tooltip": "选择 h3.c 应该怎样理解这个本地文件。"},
+      "path": {"name": "媒体文件路径", "tooltip": "本地图片、音频或视频的绝对路径。"},
+      "audio_path": {"name": "独立音轨路径（可选）", "tooltip": "仅在 video_audio 使用独立声音文件时填写。"}
+    },
+    "outputs": {
+      "0": {"name": "参考素材", "tooltip": "已追加这个媒体文件的素材列表。"}
+    }
+  },
+  "H3GenerateVideo": {
+    "display_name": "H3 · 生成视频（Metal）",
+    "description": "在 Apple Silicon 上通过 h3.c Metal 推理生成 MP4。",
+    "inputs": {
+      "prompt": {"name": "提示词", "tooltip": "依次描述主体、动作时间线、环境、镜头、画面、声音和需要避免的问题。"},
+      "references": {"name": "参考素材", "tooltip": "有序 Ref2VA 素材；不能和首帧/尾帧同时使用。"},
+      "first_frame": {"name": "首帧（可选）", "tooltip": "FL2VA 开场帧锚点；使用时不要连接参考素材。"},
+      "last_frame": {"name": "尾帧（可选）", "tooltip": "FL2VA 结束帧锚点；使用时不要连接参考素材。"},
+      "task": {"name": "模型任务", "tooltip": "有序素材用 Ref2VA；文生视频或首尾帧用 FL2VA。"},
+      "width": {"name": "宽度", "tooltip": "输出宽度，必须是 16 的倍数。"},
+      "height": {"name": "高度", "tooltip": "输出高度，必须是 16 的倍数。"},
+      "seconds": {"name": "时长（秒）", "tooltip": "这个镜头的时长，固定按 24 FPS 计算。"},
+      "quality_profile": {"name": "画质档位", "tooltip": "preview 最快；quality 用于正式出片；reference 是很慢的画质诊断参考。"},
+      "resource_profile": {"name": "资源档位", "tooltip": "low/auto 对前台更友好；max 适合电脑空闲时。"},
+      "seed": {"name": "随机种子", "tooltip": "迭代同一镜头时保持种子不变，结果更便于比较。"},
+      "reuse_completed": {"name": "复用相同的已完成任务", "tooltip": "如果完全相同的镜头已经生成过，就直接返回结果。"}
+    },
+    "outputs": {
+      "0": {"name": "视频", "tooltip": "生成的 MP4 视频。"},
+      "1": {"name": "任务目录", "tooltip": "连接到“合并分镜 MP4”对应序号的输入。"},
+      "2": {"name": "运行摘要", "tooltip": "任务 ID、耗时、档位和输出路径。"}
+    }
+  },
+  "H3AssembleStoryboard": {
+    "display_name": "H3 · 合并分镜 MP4",
+    "description": "按顺序无损拼接 2–6 个已完成的 H3 镜头，不再进行模型推理。",
+    "inputs": {
+      "title": {"name": "项目名称", "tooltip": "保存到分镜项目元数据中。"},
+      "shot_1_job": {"name": "镜头 1 任务目录", "tooltip": "连接第一个 H3 生成节点的“任务目录”。"},
+      "shot_2_job": {"name": "镜头 2 任务目录", "tooltip": "连接第二个 H3 生成节点的“任务目录”。"},
+      "shot_3_job": {"name": "镜头 3 任务目录（可选）", "tooltip": "第三个已完成镜头。"},
+      "shot_4_job": {"name": "镜头 4 任务目录（可选）", "tooltip": "第四个已完成镜头。"},
+      "shot_5_job": {"name": "镜头 5 任务目录（可选）", "tooltip": "第五个已完成镜头。"},
+      "shot_6_job": {"name": "镜头 6 任务目录（可选）", "tooltip": "第六个已完成镜头。"}
+    },
+    "outputs": {
+      "0": {"name": "最终视频", "tooltip": "镜头之间硬切的完整 MP4。"},
+      "1": {"name": "分镜项目目录", "tooltip": "包含元数据、FFmpeg 日志和最终 MP4。"},
+      "2": {"name": "合并摘要", "tooltip": "分镜 ID、复用状态和输出路径。"}
+    }
+  }
+}
