@@ -69,7 +69,7 @@
       "height": {"name": "Height", "tooltip": "Output height; must be a multiple of 16."},
       "seconds": {"name": "Duration (seconds)", "tooltip": "Duration of this shot at 24 FPS."},
       "quality_profile": {"name": "Quality profile", "tooltip": "Preview is fastest; quality is the normal final; reference is a slow diagnostic oracle."},
-      "resource_profile": {"name": "Resource profile", "tooltip": "Low and auto are foreground-friendly; max is for an idle Mac."},
+      "resource_profile": {"name": "Resource profile", "tooltip": "On a 48 GB M5 Pro use auto: pause while active and resume at full policy after 60 AC-powered idle seconds. Low always progresses in background; max forces full policy."},
       "seed": {"name": "Seed", "tooltip": "Keep the same seed while refining a shot for more comparable results."},
       "reuse_completed": {"name": "Reuse identical completed job", "tooltip": "Return a matching completed shot instead of generating it again."}
     },

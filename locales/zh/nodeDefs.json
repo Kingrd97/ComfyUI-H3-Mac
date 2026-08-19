@@ -69,7 +69,7 @@
       "height": {"name": "高度", "tooltip": "输出高度，必须是 16 的倍数。"},
       "seconds": {"name": "时长（秒）", "tooltip": "这个镜头的时长，固定按 24 FPS 计算。"},
       "quality_profile": {"name": "画质档位", "tooltip": "preview 最快；quality 用于正式出片；reference 是很慢的画质诊断参考。"},
-      "resource_profile": {"name": "资源档位", "tooltip": "low/auto 对前台更友好；max 适合电脑空闲时。"},
+      "resource_profile": {"name": "资源档位", "tooltip": "48GB M5 Pro 推荐 auto：人在使用时暂停，接电且空闲 60 秒后满速继续；low 一直后台慢跑；max 强制满速。"},
       "seed": {"name": "随机种子", "tooltip": "迭代同一镜头时保持种子不变，结果更便于比较。"},
       "reuse_completed": {"name": "复用相同的已完成任务", "tooltip": "如果完全相同的镜头已经生成过，就直接返回结果。"}
     },

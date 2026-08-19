@@ -16,6 +16,7 @@ if [[ "${H3_NO_OPEN:-0}" != "1" ]]; then
   (sleep 2; open "http://127.0.0.1:$PORT") >/dev/null 2>&1 &
 fi
 printf 'Language / 界面语言: Comfy > Locale > Language > English / 中文\n'
+printf 'H3 control / 任务控制: double-click "H3 Control.command" (auto is recommended on 48GB M5 Pro)\n'
 cd "$COMFY"
 case "$DEVICE" in
   cpu)

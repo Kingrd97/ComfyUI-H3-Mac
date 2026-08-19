@@ -15,6 +15,7 @@ from typing import Callable
 from .config import BridgeConfig
 from .models import H3Request, H3Result
 from .profiles import QUALITY_PROFILES, process_prefix, should_stream
+from .scheduler import AdaptiveScheduler
 
 
 ProgressCallback = Callable[[int, int, str], None]
@@ -164,6 +165,7 @@ class H3Runner:
         expected_steps = QUALITY_PROFILES[request.quality_profile].steps
         started = time.monotonic()
         process: subprocess.Popen[str] | None = None
+        scheduler: AdaptiveScheduler | None = None
 
         with log_path.open("w", encoding="utf-8", buffering=1) as log:
             log.write("COMMAND " + json.dumps(command, ensure_ascii=False) + "\n")
@@ -177,10 +179,19 @@ class H3Runner:
                     start_new_session=True,
                 )
                 assert process.stdout is not None
+                scheduler = AdaptiveScheduler(
+                    job_dir,
+                    process.pid,
+                    request.resource_profile,
+                    self.config,
+                )
+                scheduler.start()
                 selector = selectors.DefaultSelector()
                 selector.register(process.stdout, selectors.EVENT_READ)
                 while process.poll() is None:
+                    scheduler.tick()
                     if cancelled and cancelled():
+                        scheduler.prepare_termination()
                         os.killpg(process.pid, signal.SIGTERM)
                         raise InterruptedError("H3 generation cancelled; partial output and logs were kept.")
                     for _key, _events in selector.select(timeout=0.5):
@@ -207,13 +218,19 @@ class H3Runner:
                 if not partial_path.is_file() or partial_path.stat().st_size == 0:
                     raise RuntimeError(f"h3.c finished without a video. See {log_path}")
                 partial_path.replace(result_path)
-            except BaseException:
+                scheduler.finish("completed")
+            except BaseException as exc:
+                if scheduler:
+                    scheduler.prepare_termination()
                 if process and process.poll() is None:
                     os.killpg(process.pid, signal.SIGTERM)
                     try:
                         process.wait(timeout=10)
                     except subprocess.TimeoutExpired:
                         os.killpg(process.pid, signal.SIGKILL)
+                if scheduler:
+                    state = "cancelled" if isinstance(exc, InterruptedError) else "failed"
+                    scheduler.finish(state, str(exc))
                 if not self.config.keep_failed_output:
                     partial_path.unlink(missing_ok=True)
                 raise

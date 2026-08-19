@@ -9,7 +9,9 @@ H3 shot-prompt + reference-chain nodes ── preserves user-defined ordering
    ▼
 h3_bridge runner
    ├── validation and deterministic job ID
-   ├── low / auto / max process policy
+   ├── reversible low / auto / max Darwin process policy
+   ├── HID-idle, external-CPU and AC-power adaptive controller
+   ├── exact in-memory SIGSTOP/SIGCONT pause and resume
    ├── progress and cancellation
    └── persistent request, log, partial and result files
    │ argv (never shell=True)
@@ -37,9 +39,13 @@ Storyboard assembler ── validated paths ── FFmpeg stream-copy MP4
 - The server listens on `127.0.0.1` by default.
 - Runtime/model/output/config files are excluded from Git.
 - A cancelled job terminates the entire child process group.
+- Pause, resume, and policy changes target only the recorded H3 process group; no process-name-wide signals are used.
+- `control.json` records user intent while `process.json` records the effective live state. Neither file is treated as a serialized tensor checkpoint.
 - Ordered references are immutable tuples, so downstream nodes cannot mutate an earlier branch.
 - Storyboard inputs must resolve below the configured H3 jobs directory, preventing arbitrary local files from being read through the node.
 
 ## Backend extension
 
 `H3Request` is deliberately independent from ComfyUI types. A future adapter can implement a common runner protocol and expose engine-specific capability flags. stable-diffusion.cpp should be added as a distinct backend—not treated as a drop-in synonym—because its model formats, arguments and supported H3 conditioning paths differ.
+
+Quantized h3.c execution should likewise be an explicit engine capability. The bridge must not combine an INT8 mode with `--ssd-streaming` unless the pinned h3.c revision declares that combination supported, and it must include the engine mode in the deterministic job request before completed-result reuse is allowed.

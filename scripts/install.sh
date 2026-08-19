@@ -70,4 +70,5 @@ info "安装完成"
 printf '%s\n' \
   "1. 双击 Download Model.command 下载模型" \
   "2. 双击 Start.command 启动 ComfyUI" \
-  "3. 浏览器打开 http://127.0.0.1:8188"
+  "3. 浏览器打开 http://127.0.0.1:8188" \
+  "4. 运行中可双击 H3 Control.command 暂停、继续或切换资源策略"

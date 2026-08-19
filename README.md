@@ -12,7 +12,7 @@ A beginner-friendly bridge between the official [ComfyUI](https://github.com/Com
 
 - ComfyUI for visual workflow composition, reusable assets, and parameter management.
 - h3.c for native MiniMax H3 weights, Metal inference, and MP4 encoding.
-- `low / auto / max` resource profiles that do not silently lower quality.
+- `low / auto / max` scheduling profiles that do not silently lower quality; auto pauses when the Mac is in use and resumes at full policy when it becomes idle.
 - English and Simplified Chinese node names, fields, descriptions, and tooltips through ComfyUI's native locale system.
 - A six-field shot prompt builder and lossless 2–6-shot MP4 storyboard assembly.
 - A job directory containing the request, progress, engine log, partial output, and final video.
@@ -26,7 +26,7 @@ A beginner-friendly bridge between the official [ComfyUI](https://github.com/Com
 - A fast SSD with substantial free space.
 - The Ref2VA bundle is about 144 GB; at least 170 GB free is recommended.
 
-Start with `low` or `auto` on a memory-constrained Mac. `low` enables h3.c SSD streaming, while `auto` enables it when physical memory is below 64 GiB. This exchanges speed for memory without intentionally changing generation parameters.
+A 48 GB M5 Pro should start with `auto`. It uses h3.c `--ssd-streaming` to control unified-memory pressure, pauses H3 for keyboard/mouse activity, substantial external CPU work, or battery power, and resumes without background policy after 60 seconds of AC-powered idle time. Pausing releases CPU/GPU execution while retaining the exact in-memory inference state.
 
 ## One-click installation
 
@@ -89,9 +89,9 @@ For a multi-shot story, use one prompt/generator pair per shot, then connect eac
 
 | Resource | Scheduling and memory | Changes quality settings? |
 |---|---|---|
-| low | macOS background QoS, nice 15, SSD streaming | No |
-| auto | background QoS, nice 10; streaming below 64 GiB | No |
-| max | normal priority and resident weights | No |
+| low | All cores remain available but macOS schedules them as background work; SSD streaming; always progresses | No |
+| auto | Streaming below 64 GiB; pauses while the Mac is active and resumes at full policy after 60 AC-powered idle seconds | No |
+| max | Normal priority, no automatic pause, resident weights; may be tight on a 48 GB Mac | No |
 
 | Quality | steps | layers | reuse | Intended use |
 |---|---:|---:|---:|---|
@@ -115,6 +115,18 @@ output/h3-jobs/<job-id>/
 
 An identical completed request can be reused. h3.c does not currently export denoising-step state, so a run cannot resume exactly from step 12/20. Cancellation preserves logs and the partial file, although an unfinished MP4 may not be playable.
 
+Double-click `H3 Control.command` to inspect, pause, resume, or change the scheduling policy of active jobs. The same controls are available from a shell:
+
+```bash
+./H3\ Control.command status
+./H3\ Control.command pause
+./H3\ Control.command resume
+./H3\ Control.command auto
+./H3\ Control.command max
+```
+
+Pause/resume uses macOS `SIGSTOP/SIGCONT`: loaded weights and the exact current computation remain in RAM, so resuming does not reload or repeat completed steps. This is not a serialized checkpoint and cannot survive process exit or reboot. See [resource control](docs/RESOURCE_CONTROL.md).
+
 Assembled projects are stored in `output/h3-storyboards/<storyboard-id>/`. If a later shot fails, completed shot jobs remain reusable.
 
 ## Why ComfyUI? What is Manager?
@@ -122,6 +134,10 @@ Assembled projects are stored in `output/h3-storyboards/<storyboard-id>/`. If a 
 ComfyUI is the visual node graph, execution server, API, queue, history, and workflow format. It is the strongest open foundation for reproducible local generative workflows, but its raw graph UI is not automatically the easiest possible interface for a first-time creator. This project adds a smaller H3-specific creation layer rather than replacing that reliable foundation.
 
 [ComfyUI-Manager](https://github.com/Comfy-Org/ComfyUI-Manager) is a separate extension for installing, updating, enabling, disabling, and snapshotting custom nodes and models. It is not another frontend and is not required here. We do not install it by default because this self-contained distribution pins validated revisions; unrestricted extension updates would make beginner installations less reproducible.
+
+## Quantization direction
+
+Quantization can be added as an explicit engine profile, but it will not be presented as lossless acceleration. The pinned h3.c revision's experimental INT8 option cannot be combined with SSD streaming and is not a useful default for a 48 GB machine. Newer h3.c work is expanding native INT8 Metal execution; this project will expose it only after a same-prompt, seed, resolution, NFE, memory, and quality comparison on a 48 GB M5 Pro.
 
 ## Validation status
 

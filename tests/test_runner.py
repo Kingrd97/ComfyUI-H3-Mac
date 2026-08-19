@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -58,6 +59,10 @@ def test_runner_persists_job_and_reuses_completed_result(_uname, tmp_path: Path)
     assert first.output_path.read_bytes() == b"fake-mp4-for-tests"
     assert (first.job_dir / "request.json").is_file()
     assert (first.job_dir / "engine.log").is_file()
+    assert (first.job_dir / "control.json").is_file()
+    process_status = json.loads((first.job_dir / "process.json").read_text(encoding="utf-8"))
+    assert process_status["state"] == "completed"
+    assert process_status["engine_profile"] == "max"
     assert updates[-1] == (20, 20)
 
     with patch("h3_bridge.runner.shutil.which", return_value="/usr/bin/true"):

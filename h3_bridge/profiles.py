@@ -45,7 +45,11 @@ def process_prefix(profile: ResourceProfile) -> list[str]:
     if platform.system() != "Darwin":
         return []
     if profile == "low":
-        return ["/usr/sbin/taskpolicy", "-b", "-c", "background", "-d", "throttle", "/usr/bin/nice", "-n", "15"]
+        # Keep every CPU core available, but let macOS deprioritize the work.
+        # This policy is reversible at runtime with `taskpolicy -B -p PID`.
+        return ["/usr/sbin/taskpolicy", "-b"]
     if profile == "auto":
-        return ["/usr/sbin/taskpolicy", "-b", "/usr/bin/nice", "-n", "10"]
+        # Unlike nice, Darwin background policy can later be removed by
+        # `taskpolicy -B -p PID`, allowing auto mode to boost an idle Mac.
+        return ["/usr/sbin/taskpolicy", "-b"]
     return []

@@ -14,7 +14,7 @@ def test_quality_presets_keep_resource_and_quality_separate():
 def test_resource_profiles_on_macos():
     with patch("platform.system", return_value="Darwin"):
         assert process_prefix("low")[0] == "/usr/sbin/taskpolicy"
-        assert process_prefix("auto")[0] == "/usr/sbin/taskpolicy"
+        assert process_prefix("auto") == ["/usr/sbin/taskpolicy", "-b"]
         assert process_prefix("max") == []
 
 

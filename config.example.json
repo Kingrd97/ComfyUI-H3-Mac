@@ -4,5 +4,10 @@
   "default_task": "Ref2VA",
   "output_subdir": "h3-jobs",
   "auto_ssd_streaming_ram_gib": 64,
+  "auto_idle_seconds": 60,
+  "auto_poll_seconds": 2,
+  "auto_max_external_cpu_percent": 120,
+  "auto_active_behavior": "pause",
+  "auto_require_ac_power": true,
   "keep_failed_output": true
 }
