@@ -6,6 +6,7 @@ RUNTIME="$PROJECT_ROOT/runtime"
 COMFY="$RUNTIME/ComfyUI"
 H3_SRC="$RUNTIME/h3.c"
 VENV="$RUNTIME/.venv"
+source "$PROJECT_ROOT/versions.env"
 
 info() { printf '\n\033[1;34m[H3 Mac]\033[0m %s\n' "$*"; }
 die() { printf '\n\033[1;31m错误：\033[0m %s\n' "$*" >&2; exit 1; }
@@ -22,20 +23,22 @@ brew install ffmpeg python@3.12 git
 mkdir -p "$RUNTIME/models"
 
 if [[ -d "$COMFY/.git" ]]; then
-  info "更新 ComfyUI"
-  git -C "$COMFY" pull --ff-only
+  info "同步已验证的 ComfyUI 版本"
+  git -C "$COMFY" fetch --depth 1 origin "$COMFYUI_REF"
 else
   info "下载 ComfyUI"
-  git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git "$COMFY"
+  git clone --filter=blob:none --no-checkout https://github.com/Comfy-Org/ComfyUI.git "$COMFY"
 fi
+git -C "$COMFY" checkout --detach "$COMFYUI_REF"
 
 if [[ -d "$H3_SRC/.git" ]]; then
-  info "更新 h3.c"
-  git -C "$H3_SRC" pull --ff-only
+  info "同步已验证的 h3.c 版本"
+  git -C "$H3_SRC" fetch --depth 1 origin "$H3_REF"
 else
   info "下载 h3.c"
-  git clone --recursive https://github.com/antirez/h3.c.git "$H3_SRC"
+  git clone --filter=blob:none --no-checkout https://github.com/antirez/h3.c.git "$H3_SRC"
 fi
+git -C "$H3_SRC" checkout --detach "$H3_REF"
 git -C "$H3_SRC" submodule update --init --recursive
 
 info "编译 h3.c（Apple Metal）"
