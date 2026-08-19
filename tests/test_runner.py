@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,7 +11,6 @@ from h3_bridge.runner import H3Runner
 
 def make_runner(tmp_path: Path) -> H3Runner:
     fake = Path(__file__).with_name("fake_h3.py")
-    fake.chmod(0o755)
     model_root = tmp_path / "models"
     (model_root / "FL2VA").mkdir(parents=True)
     (model_root / "Ref2VA").mkdir(parents=True)
