@@ -49,17 +49,19 @@ def test_runner_persists_job_and_reuses_completed_result(_uname, tmp_path: Path)
     runner = make_runner(tmp_path)
     request = H3Request(prompt="a cat playing in water", resource_profile="max")
     updates: list[tuple[int, int]] = []
-    first = runner.run(
-        request,
-        tmp_path / "output",
-        progress=lambda current, total, _line: updates.append((current, total)),
-    )
+    with patch("h3_bridge.runner.shutil.which", return_value="/usr/bin/true"):
+        first = runner.run(
+            request,
+            tmp_path / "output",
+            progress=lambda current, total, _line: updates.append((current, total)),
+        )
     assert first.output_path.read_bytes() == b"fake-mp4-for-tests"
     assert (first.job_dir / "request.json").is_file()
     assert (first.job_dir / "engine.log").is_file()
     assert updates[-1] == (20, 20)
 
-    second = runner.run(request, tmp_path / "output", reuse_completed=True)
+    with patch("h3_bridge.runner.shutil.which", return_value="/usr/bin/true"):
+        second = runner.run(request, tmp_path / "output", reuse_completed=True)
     assert second.output_path == first.output_path
     assert second.elapsed_seconds == 0.0
 
@@ -78,9 +80,10 @@ def test_references_cannot_mix_with_frame_anchors(_uname, tmp_path: Path):
         references=(H3Reference("image", image),),
         first_frame=image,
     )
-    try:
-        runner.validate(request)
-    except ValueError as exc:
-        assert "cannot be combined" in str(exc)
-    else:
-        raise AssertionError("Expected mixed conditioning modes to be rejected")
+    with patch("h3_bridge.runner.shutil.which", return_value="/usr/bin/true"):
+        try:
+            runner.validate(request)
+        except ValueError as exc:
+            assert "cannot be combined" in str(exc)
+        else:
+            raise AssertionError("Expected mixed conditioning modes to be rejected")
