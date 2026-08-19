@@ -12,7 +12,7 @@ A beginner-friendly bridge between the official [ComfyUI](https://github.com/Com
 
 - ComfyUI for visual workflow composition, reusable assets, and parameter management.
 - h3.c for native MiniMax H3 weights, Metal inference, and MP4 encoding.
-- `low / auto / max` scheduling profiles that do not silently lower quality; auto pauses when the Mac is in use and resumes at full policy when it becomes idle.
+- `low / auto / max` resource profiles that keep generation settings explicit; auto keeps making progress at background priority while the Mac is in use and removes that policy after a sustained idle period on AC power.
 - English and Simplified Chinese node names, fields, descriptions, and tooltips through ComfyUI's native locale system.
 - A six-field shot prompt builder and lossless 2–6-shot MP4 storyboard assembly.
 - A job directory containing the request, progress, engine log, partial output, and final video.
@@ -26,7 +26,9 @@ A beginner-friendly bridge between the official [ComfyUI](https://github.com/Com
 - A fast SSD with substantial free space.
 - The Ref2VA bundle is about 144 GB; at least 170 GB free is recommended.
 
-A 48 GB M5 Pro should start with `auto`. It uses h3.c `--ssd-streaming` to control unified-memory pressure, pauses H3 for keyboard/mouse activity, substantial external CPU work, or battery power, and resumes without background policy after 60 seconds of AC-powered idle time. Pausing releases CPU/GPU execution while retaining the exact in-memory inference state.
+A 48 GB M5 Pro should start with `auto`. With the current conservative memory rule it uses h3.c `--ssd-streaming` below 64 GiB, then keeps H3 at Darwin background priority during keyboard/mouse activity, substantial external CPU work, or battery power. After five AC-powered idle minutes it removes the background policy. H3 continues making progress in both states; only an explicit Pause sends `SIGSTOP`.
+
+The 64 GiB boundary is a safety heuristic, not an h3.c requirement. The pinned engine reports roughly 40.1 GB peak physical footprint for complex resident Ref2VA examples, so 48 GB plus foreground applications can be tight. SSD streaming greatly lowers DiT residency but is an explicit tradeoff: it performs large read-only, uncached model reads and can contend for disk bandwidth. It does not rewrite the model or consume SSD write-endurance as if those reads were writes. See [resource control](docs/RESOURCE_CONTROL.md) before forcing resident mode.
 
 ## One-click installation
 
@@ -68,7 +70,7 @@ After validating composition, use:
 
 - `quality`: 20 steps, all 50 layers, no reuse; recommended for normal output.
 - `reference`: 50-step slow reference for important shots or quality diagnosis.
-- `resource=auto`: foreground-friendly scheduling and automatic streaming on lower-memory Macs.
+- `resource=auto`: always-progressing adaptive scheduling and conservative streaming on lower-memory Macs.
 - `resource=max`: normal priority and resident weights when the Mac is idle and has enough memory.
 
 For a multi-shot story, use one prompt/generator pair per shot, then connect each generator's `Job directory` output to `H3 · Assemble Storyboard MP4`. See the [storyboard tutorial](docs/STORYBOARD.md).
@@ -87,11 +89,13 @@ For a multi-shot story, use one prompt/generator pair per shot, then connect eac
 
 ## Resource and quality profiles
 
-| Resource | Scheduling and memory | Changes quality settings? |
+| Resource | Scheduling and memory | Changes steps/layers/reuse? |
 |---|---|---|
 | low | All cores remain available but macOS schedules them as background work; SSD streaming; always progresses | No |
-| auto | Streaming below 64 GiB; pauses while the Mac is active and resumes at full policy after 60 AC-powered idle seconds | No |
+| auto | Streaming below 64 GiB at process start; background while active/busy/on battery; normal policy after five AC-powered idle minutes; always progresses | No |
 | max | Normal priority, no automatic pause, resident weights; may be tight on a 48 GB Mac | No |
+
+The memory path is fixed when a shot starts. Switching a running job from `auto` to `max` removes background scheduling but cannot turn its SSD-streamed weights into resident weights mid-denoise. On supported M5 hardware, the resident path also enables h3.c's default INT8 projections, while SSD streaming uses original BF16 blocks; this does not alter the selected steps/layers/reuse, but the two arithmetic paths can differ slightly in fine detail or framing.
 
 | Quality | steps | layers | reuse | Intended use |
 |---|---:|---:|---:|---|
@@ -137,7 +141,7 @@ ComfyUI is the visual node graph, execution server, API, queue, history, and wor
 
 ## Quantization direction
 
-Quantization can be added as an explicit engine profile, but it will not be presented as lossless acceleration. The pinned h3.c revision's experimental INT8 option cannot be combined with SSD streaming and is not a useful default for a 48 GB machine. Newer h3.c work is expanding native INT8 Metal execution; this project will expose it only after a same-prompt, seed, resolution, NFE, memory, and quality comparison on a 48 GB M5 Pro.
+The pinned h3.c revision already selects its native resident INT8 MLP/QKV/attention projections on supported M5 hardware. SSD streaming is a separate original-BF16 path and disables those resident optimizations. A future UI revision will separate scheduling from the memory/engine path instead of presenting quantization as lossless acceleration; defaults will change only after same-prompt, seed, resolution, NFE, memory, and quality comparisons on a 48 GB M5 Pro.
 
 ## Validation status
 

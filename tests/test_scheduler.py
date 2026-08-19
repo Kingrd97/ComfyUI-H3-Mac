@@ -12,12 +12,12 @@ from h3_bridge.config import BridgeConfig
 from h3_bridge.scheduler import AdaptiveScheduler
 
 
-def config(tmp_path: Path, behavior: str = "pause") -> BridgeConfig:
+def config(tmp_path: Path, behavior: str = "background") -> BridgeConfig:
     return BridgeConfig(
         project_root=tmp_path,
         h3_binary=tmp_path / "h3",
         model_root=tmp_path / "models",
-        auto_idle_seconds=60,
+        auto_idle_seconds=300,
         auto_poll_seconds=2,
         auto_max_external_cpu_percent=120,
         auto_active_behavior=behavior,
@@ -25,7 +25,7 @@ def config(tmp_path: Path, behavior: str = "pause") -> BridgeConfig:
     )
 
 
-def test_auto_pauses_for_user_then_resumes_at_full_policy(tmp_path: Path):
+def test_auto_backgrounds_for_user_then_boosts_at_idle(tmp_path: Path):
     idle = [3.0]
     now = [0.0]
     signals: list[signal.Signals] = []
@@ -49,31 +49,34 @@ def test_auto_pauses_for_user_then_resumes_at_full_policy(tmp_path: Path):
     ):
         scheduler.start()
         assert scheduler.tick().reason == "user-active"
-        idle[0] = 90.0
+        idle[0] = 360.0
         now[0] = 3.0
         decision = scheduler.tick()
 
     assert decision.reason == "idle-boost"
-    assert signals == [signal.SIGSTOP, signal.SIGCONT]
-    assert policies == [False]
+    assert signals == []
+    assert policies == [True, False]
     status = json.loads((tmp_path / "process.json").read_text(encoding="utf-8"))
     assert status["state"] == "running"
     assert status["background"] is False
 
 
-def test_auto_stays_paused_for_external_cpu_or_battery(tmp_path: Path):
+def test_auto_backgrounds_for_external_cpu_or_battery(tmp_path: Path):
     scheduler = AdaptiveScheduler(
         tmp_path,
         4242,
         "auto",
         config(tmp_path),
-        idle_probe=lambda: 90.0,
+        idle_probe=lambda: 360.0,
         cpu_probe=lambda _pgid: 180.0,
         power_probe=lambda: True,
     )
     with patch("h3_bridge.scheduler.signal_process_group", return_value=True):
         scheduler.start()
-    assert scheduler.tick().reason == "foreground-cpu"
+    cpu_decision = scheduler.tick()
+    assert cpu_decision.reason == "foreground-cpu"
+    assert not cpu_decision.paused
+    assert cpu_decision.background
 
     battery_dir = tmp_path / "battery"
     battery_dir.mkdir()
@@ -82,13 +85,16 @@ def test_auto_stays_paused_for_external_cpu_or_battery(tmp_path: Path):
         4343,
         "auto",
         config(tmp_path),
-        idle_probe=lambda: 90.0,
+        idle_probe=lambda: 360.0,
         cpu_probe=lambda _pgid: 0.0,
         power_probe=lambda: False,
     )
     with patch("h3_bridge.scheduler.signal_process_group", return_value=True):
         battery.start()
-    assert battery.tick().reason == "battery"
+    battery_decision = battery.tick()
+    assert battery_decision.reason == "battery"
+    assert not battery_decision.paused
+    assert battery_decision.background
 
 
 def test_manual_pause_overrides_max_and_can_resume(tmp_path: Path):
@@ -138,7 +144,7 @@ def test_real_process_group_can_pause_and_continue(tmp_path: Path):
         tmp_path,
         child.pid,
         "auto",
-        config(tmp_path),
+        config(tmp_path, "pause"),
         idle_probe=lambda: idle[0],
         cpu_probe=lambda _pgid: 0.0,
         power_probe=lambda: True,
@@ -150,7 +156,7 @@ def test_real_process_group_can_pause_and_continue(tmp_path: Path):
             assert paused["state"] == "paused"
             assert child.poll() is None
 
-            idle[0] = 90.0
+            idle[0] = 360.0
             scheduler.tick(force=True)
             resumed = json.loads((tmp_path / "process.json").read_text(encoding="utf-8"))
             assert resumed["state"] == "running"
