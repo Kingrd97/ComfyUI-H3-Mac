@@ -29,10 +29,16 @@ if [[ -d "$PROJECT_ROOT/runtime/models/MiniMax-H3/FL2VA" ]]; then
     printf '✅ Ref2VA 扩展模型目录\n'
   else
     printf 'ℹ️  未安装 Ref2VA；首尾帧和文生视频仍可用\n'
+  fi
 else
   printf '⚠️  尚未找到 FL2VA 基础模型，请运行 Download Model.command\n'
 fi
 
-printf '\n物理内存：%s GiB\n' "$(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 ))"
+memsize="$(sysctl -n hw.memsize 2>/dev/null || true)"
+if [[ "$memsize" =~ ^[0-9]+$ ]]; then
+  printf '\n物理内存：%s GiB\n' "$(( memsize / 1024 / 1024 / 1024 ))"
+else
+  printf '\n物理内存：无法读取\n'
+fi
 printf '可用磁盘：%s\n' "$(df -h "$PROJECT_ROOT" | awk 'NR==2 {print $4}')"
 exit "$failed"

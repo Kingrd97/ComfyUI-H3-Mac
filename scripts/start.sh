@@ -5,12 +5,29 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMFY="$PROJECT_ROOT/runtime/ComfyUI"
 PYTHON="$PROJECT_ROOT/runtime/.venv/bin/python"
 PORT="${H3_COMFY_PORT:-8188}"
+DEVICE="${H3_COMFY_DEVICE:-cpu}"
 
 if [[ ! -x "$PYTHON" || ! -f "$COMFY/main.py" ]]; then
   printf '尚未安装，请先双击 Install.command。\n' >&2
   exit 1
 fi
 
-(sleep 2; open "http://127.0.0.1:$PORT") >/dev/null 2>&1 &
+if [[ "${H3_NO_OPEN:-0}" != "1" ]]; then
+  (sleep 2; open "http://127.0.0.1:$PORT") >/dev/null 2>&1 &
+fi
 cd "$COMFY"
-exec "$PYTHON" main.py --listen 127.0.0.1 --port "$PORT" "$@"
+case "$DEVICE" in
+  cpu)
+    # ComfyUI is the control plane; h3.c remains a separate Metal process.
+    # Keeping torch on CPU avoids unnecessary unified-memory use and CUDA
+    # fallback failures on hosts where PyTorch cannot detect MPS.
+    exec "$PYTHON" main.py --cpu --listen 127.0.0.1 --port "$PORT" "$@"
+    ;;
+  auto)
+    exec "$PYTHON" main.py --listen 127.0.0.1 --port "$PORT" "$@"
+    ;;
+  *)
+    printf 'H3_COMFY_DEVICE must be cpu or auto (got: %s).\n' "$DEVICE" >&2
+    exit 2
+    ;;
+esac
