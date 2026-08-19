@@ -1,0 +1,8 @@
+{
+  "h3_binary": "runtime/h3.c/h3",
+  "model_root": "runtime/models/MiniMax-H3",
+  "default_task": "Ref2VA",
+  "output_subdir": "h3-jobs",
+  "auto_ssd_streaming_ram_gib": 64,
+  "keep_failed_output": true
+}

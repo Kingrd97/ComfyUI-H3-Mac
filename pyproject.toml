@@ -1,0 +1,16 @@
+[project]
+name = "comfyui-h3-mac"
+version = "0.1.0"
+description = "A beginner-friendly ComfyUI bridge for h3.c on Apple Silicon Macs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "ComfyUI-H3-Mac contributors" }]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/Kingrd97/ComfyUI-H3-Mac"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,0 +1,2 @@
+# The node uses packages already provided by ComfyUI.
+# Keep this file so ComfyUI-Manager can install the project consistently.

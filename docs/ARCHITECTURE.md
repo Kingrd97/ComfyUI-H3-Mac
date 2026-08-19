@@ -1,0 +1,40 @@
+# Architecture
+
+```text
+ComfyUI graph
+   │ IMAGE / AUDIO / local media paths
+   ▼
+H3 reference-chain nodes ── preserves user-defined ordering
+   │ H3Request
+   ▼
+h3_bridge runner
+   ├── validation and deterministic job ID
+   ├── low / auto / max process policy
+   ├── progress and cancellation
+   └── persistent request, log, partial and result files
+   │ argv (never shell=True)
+   ▼
+antirez/h3.c ── Metal inference ── FFmpeg MP4
+   │
+   ▼
+ComfyUI native VIDEO output and preview
+```
+
+## Boundaries
+
+- ComfyUI owns graph composition and reusable creative workflows.
+- The bridge owns input materialization, validation, scheduling and job persistence.
+- h3.c owns model loading, conditioning, inference, decoding and MP4 generation.
+- Model acquisition is separate because model terms and storage needs differ from source code.
+
+## Safety properties
+
+- Subprocesses receive argument vectors; prompts and paths are never interpolated into a shell command.
+- The server listens on `127.0.0.1` by default.
+- Runtime/model/output/config files are excluded from Git.
+- A cancelled job terminates the entire child process group.
+- Ordered references are immutable tuples, so downstream nodes cannot mutate an earlier branch.
+
+## Backend extension
+
+`H3Request` is deliberately independent from ComfyUI types. A future adapter can implement a common runner protocol and expose engine-specific capability flags. stable-diffusion.cpp should be added as a distinct backend—not treated as a drop-in synonym—because its model formats, arguments and supported H3 conditioning paths differ.

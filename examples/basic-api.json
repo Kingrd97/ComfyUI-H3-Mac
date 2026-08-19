@@ -1,0 +1,34 @@
+{
+  "1": {
+    "class_type": "H3EmptyReferences",
+    "inputs": {}
+  },
+  "2": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "cat.png"
+    }
+  },
+  "3": {
+    "class_type": "H3AddImageReference",
+    "inputs": {
+      "references": ["1", 0],
+      "image": ["2", 0]
+    }
+  },
+  "4": {
+    "class_type": "H3GenerateVideo",
+    "inputs": {
+      "prompt": "The same cat in Picture 1 plays actively in a shallow forest stream, natural motion, realistic wet fur, stable anatomy, cinematic tracking shot.",
+      "references": ["3", 0],
+      "task": "Ref2VA",
+      "width": 640,
+      "height": 384,
+      "seconds": 5.0,
+      "quality_profile": "preview",
+      "resource_profile": "low",
+      "seed": 42,
+      "reuse_completed": true
+    }
+  }
+}

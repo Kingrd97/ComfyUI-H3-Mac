@@ -1,0 +1,14 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+runtime/
+config.json
+output/
+models/
+*.gguf
+*.safetensors
+*.ckpt
+*.part
+*.log
