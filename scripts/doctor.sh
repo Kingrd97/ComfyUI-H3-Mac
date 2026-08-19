@@ -15,11 +15,22 @@ check() {
   fi
 }
 
+optional_check() {
+  local label="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    printf '✅ %s\n' "$label"
+  else
+    printf '⚠️  %s（可选；auto 会使用系统指标回退）\n' "$label"
+  fi
+}
+
 printf 'ComfyUI-H3-Mac 环境检查\n\n'
 [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] && printf '✅ Apple Silicon macOS\n' || { printf '❌ 需要 Apple Silicon macOS\n'; failed=1; }
 check "FFmpeg" command -v ffmpeg
 check "FFprobe" command -v ffprobe
 check "h3.c 可执行文件" test -x "$PROJECT_ROOT/runtime/h3.c/h3"
+optional_check "前台卡顿保护器" test -x "$PROJECT_ROOT/runtime/bin/h3-guardian"
 check "ComfyUI" test -f "$PROJECT_ROOT/runtime/ComfyUI/main.py"
 check "Python 虚拟环境" test -x "$PROJECT_ROOT/runtime/.venv/bin/python"
 

@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
-import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -16,8 +17,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from h3_bridge.config import load_config  # noqa: E402
 from h3_bridge.scheduler import (  # noqa: E402
     process_group_alive,
+    process_start_signature,
     read_json,
-    set_process_group_background,
     signal_process_group,
 )
 
@@ -31,13 +32,29 @@ def atomic_json(path: Path, payload: dict[str, object]) -> None:
     temporary.replace(path)
 
 
-def jobs_root() -> Path:
-    config = load_config()
-    return PROJECT_ROOT / "runtime" / "ComfyUI" / "output" / config.output_subdir
+def process_matches_h3(pgid: int, h3_binary: Path) -> bool:
+    """Refuse to signal a stale job whose process-group ID was reused."""
+
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "-ww", "-g", str(pgid), "-o", "command="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    executable = str(h3_binary.resolve())
+    return result.returncode == 0 and any(
+        command == executable or command.startswith(executable + " ")
+        for command in (line.strip() for line in result.stdout.splitlines())
+    )
 
 
 def active_jobs(selected_job: str = "") -> list[tuple[Path, dict[str, object]]]:
-    root = jobs_root()
+    config = load_config()
+    root = PROJECT_ROOT / "runtime" / "ComfyUI" / "output" / config.output_subdir
     if not root.is_dir():
         return []
     selected: list[tuple[Path, dict[str, object]]] = []
@@ -45,11 +62,25 @@ def active_jobs(selected_job: str = "") -> list[tuple[Path, dict[str, object]]]:
         if selected_job and status_path.parent.name != selected_job:
             continue
         status = read_json(status_path)
+        if status.get("state") not in {"running", "paused"}:
+            continue
+        try:
+            status_age = time.time() - float(status.get("updated_at", 0))
+        except (TypeError, ValueError):
+            continue
         try:
             pgid = int(status.get("pgid", 0))
         except (TypeError, ValueError):
             continue
-        if pgid > 1 and process_group_alive(pgid):
+        expected_start = str(status.get("process_start_signature", ""))
+        same_process = bool(expected_start) and (
+            process_start_signature(pgid) == expected_start
+        )
+        freshness_limit = max(20.0, config.auto_metrics_poll_seconds * 3.0 + 10.0)
+        legacy_fresh = not expected_start and -5 <= status_age <= freshness_limit
+        if pgid > 1 and (same_process or legacy_fresh) and process_group_alive(
+            pgid
+        ) and process_matches_h3(pgid, config.h3_binary):
             selected.append((status_path.parent, status))
     return selected
 
@@ -67,12 +98,29 @@ def describe(job_dir: Path, status: dict[str, object]) -> str:
     )
 
 
-def update_control(job_dir: Path, **updates: object) -> None:
+def update_control(
+    job_dir: Path,
+    *,
+    pgid: int = 0,
+    selected_signal: signal.Signals | None = None,
+    **updates: object,
+) -> bool:
     path = job_dir / "control.json"
-    value = read_json(path)
-    value.update(updates)
-    value["updated_at"] = time.time()
-    atomic_json(path, value)
+    lock_path = job_dir / "control.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        value = read_json(path)
+        value.update(updates)
+        value["control_generation"] = time.time_ns()
+        value["updated_at"] = time.time()
+        atomic_json(path, value)
+        signalled = bool(
+            selected_signal is not None
+            and pgid > 1
+            and signal_process_group(pgid, selected_signal)
+        )
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    return signalled
 
 
 def control(action: str, selected_job: str = "") -> int:
@@ -87,20 +135,35 @@ def control(action: str, selected_job: str = "") -> int:
         return 0
 
     for job_dir, status in jobs:
-        pgid = int(status["pgid"])
+        try:
+            pgid = int(status.get("pgid", 0))
+        except (TypeError, ValueError):
+            pgid = 0
         if action == "pause":
-            update_control(job_dir, paused=True)
-            signal_process_group(pgid, signal.SIGSTOP)
-            message = "已暂停 / paused"
+            update_control(
+                job_dir,
+                pgid=pgid,
+                selected_signal=signal.SIGSTOP,
+                paused=True,
+            )
+            message = "已发送暂停请求 / pause requested"
         elif action == "resume":
-            update_control(job_dir, paused=False)
-            signal_process_group(pgid, signal.SIGCONT)
-            message = "已继续（仍遵循当前策略） / resumed"
+            update_control(
+                job_dir,
+                pgid=pgid,
+                selected_signal=signal.SIGCONT,
+                paused=False,
+            )
+            message = "已请求继续（仍遵循当前策略） / resume requested"
         elif action in {"low", "auto", "max"}:
-            update_control(job_dir, paused=False, policy=action)
-            signal_process_group(pgid, signal.SIGCONT)
-            set_process_group_background(pgid, action != "max")
-            message = f"已切换为 {action} 并继续 / switched to {action}"
+            update_control(
+                job_dir,
+                pgid=pgid,
+                selected_signal=signal.SIGCONT,
+                paused=False,
+                policy=action,
+            )
+            message = f"已请求切换为 {action} 并继续 / switch requested"
         else:
             raise ValueError(f"Unsupported action: {action}")
         print(f"{job_dir.name}: {message}")

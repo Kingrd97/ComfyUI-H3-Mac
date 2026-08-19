@@ -10,8 +10,9 @@ H3 shot-prompt + reference-chain nodes ── preserves user-defined ordering
 h3_bridge runner
    ├── validation and deterministic job ID
    ├── reversible low / auto / max Darwin process policy
-   ├── HID-idle, external-CPU and AC-power adaptive controller
-   ├── exact in-memory SIGSTOP/SIGCONT pause and resume
+   ├── permission-free native input/display responsiveness guardian
+   ├── WindowServer/GPU/external-CPU fallback + AC-power controller
+   ├── best-effort in-memory SIGSTOP/SIGCONT pause and resume
    ├── progress and cancellation
    └── persistent request, log, partial and result files
    │ argv (never shell=True)
@@ -41,6 +42,9 @@ Storyboard assembler ── validated paths ── FFmpeg stream-copy MP4
 - A cancelled job terminates the entire child process group.
 - Pause, resume, and policy changes target only the recorded H3 process group; no process-name-wide signals are used.
 - `control.json` records user intent while `process.json` records the effective live state. Neither file is treated as a serialized tensor checkpoint.
+- Adaptive protection primarily combines recent input with consecutive abnormal display-link callback gaps or callback age from the native helper; it needs no Accessibility or Screen Recording permission and captures no screen content. Framebuffer age is diagnostic telemetry only and never triggers Pause by itself. Sustained WindowServer/GPU/external-CPU metrics are the fallback.
+- macOS does not expose a universal frame-drop counter for arbitrary foreground applications. A stopped process retains unified memory, and already committed Metal command buffers cannot be retracted, so pause is best-effort rather than hard real-time.
+- Configuration schema v2 migration first writes `config.json.v1-backup`. It changes `background` to `adaptive` only for a configuration that exactly matches the former shipped defaults; customized policy or thresholds are preserved.
 - Ordered references are immutable tuples, so downstream nodes cannot mutate an earlier branch.
 - Storyboard inputs must resolve below the configured H3 jobs directory, preventing arbitrary local files from being read through the node.
 

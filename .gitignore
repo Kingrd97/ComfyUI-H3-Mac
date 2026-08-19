@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 runtime/
 config.json
+config.json.v1-backup
 output/
 models/
 *.gguf

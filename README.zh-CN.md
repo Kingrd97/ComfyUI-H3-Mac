@@ -12,7 +12,7 @@
 
 - ComfyUI 负责拖拽编排、素材复用和参数管理。
 - h3.c 负责 H3 原生权重的 Metal 推理与 MP4 编码。
-- `low / auto / max` 资源档位不会暗中修改 steps、layers 或 reuse；`auto` 会在人使用电脑时保持后台低优先级慢跑，持续空闲后再解除后台策略。
+- `low / auto / max` 资源档位不会暗中修改 steps、layers 或 reuse；`auto` 通常以前台友好的后台优先级慢跑，原生响应守护器或持续回退指标发现压力时短暂暂停，持续空闲后再解除后台策略。
 - 节点名称、输入项、说明和悬浮提示跟随 ComfyUI 原生界面语言切换中英文。
 - 六栏镜头提示词节点，以及 2–6 个镜头的无损 MP4 分镜合并。
 - 每个任务独立保存 `request.json`、进度、日志、失败残片和最终视频。
@@ -26,7 +26,9 @@
 - 足够快的 SSD 和大量可用磁盘
 - Ref2VA 套件约 144 GB，建议至少预留 170 GB
 
-48GB M5 Pro 默认推荐 `auto`。当前保守内存规则会在物理内存低于 64 GiB 时使用 h3.c 的 `--ssd-streaming`；检测到键鼠活动、明显的其他 CPU 任务或电池供电时，H3 会在 macOS 后台优先级下继续慢跑，接电且连续空闲 5 分钟后解除后台策略。两种状态都会持续推进，只有用户明确点击“暂停”才发送 `SIGSTOP`。
+48GB M5 Pro 默认推荐 `auto`。当前保守内存规则会在物理内存低于 64 GiB 时使用 h3.c 的 `--ssd-streaming`，人在使用电脑或电池供电时通常保持 macOS 后台优先级慢跑。原生 helper 会把“最近有键鼠输入 + display-link 回调间隔或回调 age 连续异常”作为强响应信号，两者同时出现时走快速暂停路径；它不需要“辅助功能”或“屏幕录制”权限，也不捕获屏幕内容。主显示器 framebuffer age 只写入诊断信息，绝不会单独触发暂停。如果 display-link 强信号不可用，还会用持续的非 H3 CPU 或 WindowServer/GPU 组合压力回退判断。健康稳定 15 秒后先后台试跑 20 秒，没有复发再继续后台生成。接电、空闲 5 分钟，且最新采样中的其他 CPU、WindowServer 与显示信号都已平稳时，才解除后台策略。
+
+macOS 没有可通用于任意前台 App 的真实掉帧计数接口；守护器观察的是显示系统响应，而不是读取另一个 App 的渲染器。因此原生信号和回退指标仍属于 best-effort，而不是硬实时保证：`SIGSTOP` 无法撤回已经提交给 GPU 的 Metal 工作，也不会释放模型占用的统一内存。
 
 64 GiB 是安全启发式，不是 h3.c 的硬要求。锁定版引擎在复杂 Ref2VA 常驻示例中报告约 40.1GB 进程物理峰值，因此 48GB 再叠加浏览器、IDE 等前台应用很容易吃紧。SSD streaming 能大幅降低 DiT 常驻内存，但会进行大量只读、非缓存的模型读取，可能争抢磁盘带宽；它不会反复重写模型，也不能把读取量等同成 SSD 的写入寿命消耗。强制使用常驻模式前请先看[资源控制说明](docs/RESOURCE_CONTROL_zh.md)。
 
@@ -49,6 +51,8 @@ cd ComfyUI-H3-Mac
 
 安装器会把 ComfyUI、h3.c、虚拟环境和模型放在本项目的 `runtime/` 下，便于整体移动或删除，不污染系统 Python。上游版本锁定在 `versions.env`，确保安装的是本版本已经验证过的组合。
 
+配置 schema v2 使用保守的一次性升级策略：先把旧配置备份为 `config.json.v1-backup`；只有完全匹配旧版随附 `background` 默认值的配置才迁移到新的 `adaptive` 行为，用户改过的行为或阈值都会保留。
+
 `Start.command` 会故意让 ComfyUI 控制层的 PyTorch 跑在 CPU。这**不会禁用 H3 的 Metal 推理**：H3 节点会启动单独编译的 h3.c Metal 进程。这个默认值能避免 ComfyUI 额外占用统一内存，也避免 PyTorch 设备探测失败。如果你同时使用必须依赖 MPS 的其他 ComfyUI 节点，可用 `H3_COMFY_DEVICE=auto ./Start.command` 启动。
 
 锁定的官方 ComfyUI 前端已经原生支持中文。第一次打开时会参考浏览器语言，以后可以从 `Comfy > Locale > Language` 切换；H3 节点会跟随设置变化，不依赖第三方汉化补丁。
@@ -70,7 +74,7 @@ cd ComfyUI-H3-Mac
 
 - `quality`：20 步、50 层、无复用，推荐正式出片。
 - `reference`：50 步参考档，最慢，用于关键镜头或排查快速参数造成的差异。
-- `resource=auto`：始终推进的自适应调度，低内存机器保守使用 SSD 流式加载。
+- `resource=auto`：响应感知的自适应调度，通常后台慢跑，检测到响应压力时可短暂停止；低内存机器保守使用 SSD 流式加载。
 - `resource=max`：正常优先级和权重常驻内存，电脑空闲时使用。
 
 多镜头故事给每个镜头放一组“镜头提示词 + 生成视频”，再把各生成节点的“任务目录”按顺序连接到 `H3 · 合并分镜 MP4`。完整步骤见[中文分镜教程](docs/STORYBOARD_zh-CN.md)，基础教程见 [docs/QUICKSTART_zh.md](docs/QUICKSTART_zh.md)。
@@ -92,7 +96,7 @@ cd ComfyUI-H3-Mac
 | 资源档位 | 调度/内存行为 | 是否改变 steps/layers/reuse |
 |---|---|---|
 | low | 使用全部核心但交给 macOS 后台调度；SSD streaming；一直慢跑 | 否 |
-| auto | 进程启动时 <64 GiB 自动 streaming；人在使用/CPU 忙/电池供电时后台慢跑，接电且空闲 5 分钟后解除后台策略 | 否 |
+| auto | 进程启动时 <64 GiB 自动 streaming；使用中/电池供电时通常后台慢跑，原生响应信号或持续回退压力下暂时暂停；接电安静空闲 5 分钟后解除后台策略 | 否 |
 | max | 正常优先级、无自动暂停、权重常驻；48GB 机器可能内存紧张 | 否 |
 
 一个镜头启动后，内存路径就固定了。运行中把 `auto` 切成 `max` 只能解除后台调度，不能在去噪中途把 SSD 流式权重热切成常驻。支持的 M5 上，常驻路径还会启用 h3.c 默认的 INT8 投影，而 SSD streaming 使用原始 BF16 block；它们不会改变所选 steps/layers/reuse，但细节或构图可能存在轻微数值差异。
@@ -129,7 +133,7 @@ output/h3-jobs/<job-id>/
 ./H3\ Control.command max
 ```
 
-“暂停/继续”使用 macOS `SIGSTOP/SIGCONT`：当前去噪计算和已加载权重原样留在内存，继续时不会从头加载或重做已完成步骤。它不是写入磁盘的模型检查点，因此退出 ComfyUI、杀掉进程、关机或重启后不能从同一步继续。需要把内存腾给其他应用时，应取消任务；已完成的单镜头仍会保留并可复用。详细说明见[资源调度与暂停](docs/RESOURCE_CONTROL_zh.md)。
+“暂停/继续”使用 macOS `SIGSTOP/SIGCONT`：已加载权重和进程状态仍留在内存，继续时不会从头加载或重做已完成的 CPU 侧进度。暂停不会释放统一内存，也无法撤回已经提交给 GPU 的 Metal command buffer。它不是写入磁盘的模型检查点，因此退出 ComfyUI、杀掉进程、关机或重启后不能从同一步继续。需要把内存腾给其他应用时，应取消任务；已完成的单镜头仍会保留并可复用。详细说明见[资源调度与暂停](docs/RESOURCE_CONTROL_zh.md)。
 
 合并后的项目保存在 `output/h3-storyboards/<storyboard-id>/`。后面的镜头失败时，前面完成的单镜头任务仍可复用。
 

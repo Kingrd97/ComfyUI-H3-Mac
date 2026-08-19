@@ -12,6 +12,10 @@ if [[ ! -x "$PYTHON" || ! -f "$COMFY/main.py" ]]; then
   exit 1
 fi
 
+"$PYTHON" "$PROJECT_ROOT/scripts/migrate_config.py" \
+  "$PROJECT_ROOT/config.json" \
+  "$PROJECT_ROOT/config.example.json"
+
 if [[ "${H3_NO_OPEN:-0}" != "1" ]]; then
   (sleep 2; open "http://127.0.0.1:$PORT") >/dev/null 2>&1 &
 fi

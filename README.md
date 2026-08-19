@@ -12,7 +12,7 @@ A beginner-friendly bridge between the official [ComfyUI](https://github.com/Com
 
 - ComfyUI for visual workflow composition, reusable assets, and parameter management.
 - h3.c for native MiniMax H3 weights, Metal inference, and MP4 encoding.
-- `low / auto / max` resource profiles that keep generation settings explicit; auto keeps making progress at background priority while the Mac is in use and removes that policy after a sustained idle period on AC power.
+- `low / auto / max` resource profiles that keep generation settings explicit; auto normally progresses at background priority, temporarily pauses when the native responsiveness guardian or sustained fallback metrics detect pressure, and removes that policy after a sustained idle period on AC power.
 - English and Simplified Chinese node names, fields, descriptions, and tooltips through ComfyUI's native locale system.
 - A six-field shot prompt builder and lossless 2–6-shot MP4 storyboard assembly.
 - A job directory containing the request, progress, engine log, partial output, and final video.
@@ -26,7 +26,9 @@ A beginner-friendly bridge between the official [ComfyUI](https://github.com/Com
 - A fast SSD with substantial free space.
 - The Ref2VA bundle is about 144 GB; at least 170 GB free is recommended.
 
-A 48 GB M5 Pro should start with `auto`. With the current conservative memory rule it uses h3.c `--ssd-streaming` below 64 GiB, then keeps H3 at Darwin background priority during keyboard/mouse activity, substantial external CPU work, or battery power. After five AC-powered idle minutes it removes the background policy. H3 continues making progress in both states; only an explicit Pause sends `SIGSTOP`.
+A 48 GB M5 Pro should start with `auto`. With the current conservative memory rule it uses h3.c `--ssd-streaming` below 64 GiB and normally keeps H3 at Darwin background priority while the Mac is in use or on battery. A native helper watches recent input plus consecutively abnormal display-link callback gaps or callback age and triggers the fast pause path when both indicate display-service trouble. It needs neither Accessibility nor Screen Recording permission and does not capture the screen. Main-display framebuffer age is recorded for diagnosis only and never triggers Pause by itself. If the strong display-link signal is unavailable, sustained non-H3 CPU or combined WindowServer/GPU pressure provides a fallback. After 15 healthy seconds auto performs a 20-second background probe; if pressure does not return, background generation continues. After five AC-powered idle minutes, a fresh low external-CPU sample and settled WindowServer/display signals allow auto to remove the background policy.
+
+macOS does not expose a universal frame-drop counter for arbitrary foreground applications. The guardian observes display-system responsiveness rather than another app's renderer, so even its native signal and fallback metrics are best-effort rather than hard real-time. `SIGSTOP` cannot retract Metal work already submitted to the GPU and does not release loaded weights from unified memory.
 
 The 64 GiB boundary is a safety heuristic, not an h3.c requirement. The pinned engine reports roughly 40.1 GB peak physical footprint for complex resident Ref2VA examples, so 48 GB plus foreground applications can be tight. SSD streaming greatly lowers DiT residency but is an explicit tradeoff: it performs large read-only, uncached model reads and can contend for disk bandwidth. It does not rewrite the model or consume SSD write-endurance as if those reads were writes. See [resource control](docs/RESOURCE_CONTROL.md) before forcing resident mode.
 
@@ -49,6 +51,8 @@ cd ComfyUI-H3-Mac
 
 ComfyUI, h3.c, the Python virtual environment, and models live under `runtime/`, so the installation is self-contained. Validated upstream revisions are pinned in `versions.env` instead of tracking unpredictable future main branches.
 
+Configuration schema v2 has a conservative one-time upgrade path. A legacy configuration is first backed up as `config.json.v1-backup`. Only a file that still exactly matches the former shipped `background` defaults is moved to the new `adaptive` behavior; customized behavior or thresholds are preserved.
+
 `Start.command` intentionally runs the ComfyUI control plane with PyTorch on CPU. This does **not** disable Metal generation: the H3 node starts the separately compiled h3.c binary, which still performs inference with Metal. This default avoids unnecessary unified-memory use and PyTorch device-detection failures. If you also use other ComfyUI nodes that require MPS, start with `H3_COMFY_DEVICE=auto ./Start.command`.
 
 The pinned official ComfyUI frontend has native localization. Browser language is used on first launch; `Comfy > Locale > Language` changes it later. H3 node translations follow that setting without a third-party translation patch.
@@ -70,7 +74,7 @@ After validating composition, use:
 
 - `quality`: 20 steps, all 50 layers, no reuse; recommended for normal output.
 - `reference`: 50-step slow reference for important shots or quality diagnosis.
-- `resource=auto`: always-progressing adaptive scheduling and conservative streaming on lower-memory Macs.
+- `resource=auto`: response-aware adaptive scheduling and conservative streaming on lower-memory Macs; it normally background-runs but can temporarily pause under detected contention.
 - `resource=max`: normal priority and resident weights when the Mac is idle and has enough memory.
 
 For a multi-shot story, use one prompt/generator pair per shot, then connect each generator's `Job directory` output to `H3 · Assemble Storyboard MP4`. See the [storyboard tutorial](docs/STORYBOARD.md).
@@ -92,7 +96,7 @@ For a multi-shot story, use one prompt/generator pair per shot, then connect eac
 | Resource | Scheduling and memory | Changes steps/layers/reuse? |
 |---|---|---|
 | low | All cores remain available but macOS schedules them as background work; SSD streaming; always progresses | No |
-| auto | Streaming below 64 GiB at process start; background while active/busy/on battery; normal policy after five AC-powered idle minutes; always progresses | No |
+| auto | Streaming below 64 GiB at process start; normally background while in use/on battery; temporary pause on native responsiveness or sustained fallback pressure; normal policy after five quiet AC-powered idle minutes | No |
 | max | Normal priority, no automatic pause, resident weights; may be tight on a 48 GB Mac | No |
 
 The memory path is fixed when a shot starts. Switching a running job from `auto` to `max` removes background scheduling but cannot turn its SSD-streamed weights into resident weights mid-denoise. On supported M5 hardware, the resident path also enables h3.c's default INT8 projections, while SSD streaming uses original BF16 blocks; this does not alter the selected steps/layers/reuse, but the two arithmetic paths can differ slightly in fine detail or framing.
@@ -129,7 +133,7 @@ Double-click `H3 Control.command` to inspect, pause, resume, or change the sched
 ./H3\ Control.command max
 ```
 
-Pause/resume uses macOS `SIGSTOP/SIGCONT`: loaded weights and the exact current computation remain in RAM, so resuming does not reload or repeat completed steps. This is not a serialized checkpoint and cannot survive process exit or reboot. See [resource control](docs/RESOURCE_CONTROL.md).
+Pause/resume uses macOS `SIGSTOP/SIGCONT`: loaded weights and process state remain in RAM, so resuming does not reload or repeat completed CPU-side progress. This does not free unified memory, cannot revoke a Metal command buffer already committed to the GPU, is not a serialized checkpoint, and cannot survive process exit or reboot. See [resource control](docs/RESOURCE_CONTROL.md).
 
 Assembled projects are stored in `output/h3-storyboards/<storyboard-id>/`. If a later shot fails, completed shot jobs remain reusable.
 
