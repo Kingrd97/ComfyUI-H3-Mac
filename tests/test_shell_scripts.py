@@ -22,6 +22,8 @@ from h3_bridge.job_registry import (
     register_starting_job,
     registered_jobs,
 )
+from h3_bridge import runner as runner_module
+from h3_bridge.locking import publication_control_guard
 from h3_bridge.scheduler import process_group_stopped, process_start_signature
 
 
@@ -123,6 +125,8 @@ def test_pause_serializes_intent_and_immediate_stop(tmp_path: Path):
     status = {"pgid": 4242, "state": "running"}
     selected_config = SimpleNamespace()
     with patch.object(
+        h3_control, "PROJECT_ROOT", tmp_path
+    ), patch.object(
         h3_control, "load_config", return_value=selected_config
     ), patch.object(
         h3_control,
@@ -133,7 +137,7 @@ def test_pause_serializes_intent_and_immediate_stop(tmp_path: Path):
     ), patch.object(
         h3_control,
         "update_control",
-        side_effect=lambda _job, **values: updates.append(values),
+        side_effect=lambda _job, **values: updates.append(values) or True,
     ):
         assert h3_control.control("pause") == 0
 
@@ -409,11 +413,16 @@ def test_control_reauthorizes_registered_job_immediately_before_signal(
         ), patch.object(
             h3_control,
             "_registered_control_authorized",
-            side_effect=[True, False],
-        ) as authorize, patch.object(h3_control, "update_control") as update:
+            return_value=True,
+        ) as list_authorize, patch.object(
+            h3_control,
+            "_registered_control_authorized_guarded",
+            return_value=False,
+        ) as signal_authorize, patch.object(h3_control, "update_control") as update:
             assert h3_control.control("pause") == 1
 
-        assert authorize.call_count == 2
+        list_authorize.assert_called_once()
+        signal_authorize.assert_called_once()
         update.assert_not_called()
     finally:
         finish_job(registration, "test-cleanup")
@@ -477,7 +486,11 @@ def test_registered_custom_output_orphan_requires_matching_identities(tmp_path: 
         ), patch.object(h3_control, "process_group_alive", return_value=True), patch.object(
             h3_control, "process_matches_h3", return_value=True
         ), patch.object(h3_control, "process_alive", return_value=False):
-            assert h3_control.orphan_jobs() == [(job_dir, status)]
+            selected = h3_control.orphan_jobs()
+            assert selected[0][0] == job_dir
+            assert all(selected[0][1][key] == value for key, value in status.items())
+            assert selected[0][1]["_registry_trusted"] is True
+            assert selected[0][1]["_registration_token"] == registration.token
 
         # A stale/corrupt status cannot redirect the registry to another PID;
         # the current two-sided registry remains the cleanup authority.
@@ -542,10 +555,14 @@ def test_cleanup_orphan_continues_before_terminating_stopped_group(tmp_path: Pat
     }
     (tmp_path / "process.json").write_text(json.dumps(status), encoding="utf-8")
     updates: list[dict[str, object]] = []
-    with patch.object(h3_control, "orphan_jobs", return_value=[(tmp_path, status)]), patch.object(
+    with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+        h3_control, "orphan_jobs", return_value=[(tmp_path, status)]
+    ), patch.object(
         h3_control,
         "update_control",
         side_effect=lambda _job, **values: updates.append(values) or True,
+    ), patch.object(
+        h3_control, "_legacy_control_authorized", return_value=True
     ), patch.object(h3_control, "process_group_alive", return_value=False):
         assert h3_control.cleanup_orphans() == 1
 
@@ -766,7 +783,7 @@ def test_registered_leaderless_group_waits_for_delayed_lock_release(
     def group_alive(_pgid: int) -> bool:
         nonlocal group_checks
         group_checks += 1
-        return group_checks <= 2
+        return group_checks <= 6
 
     updates: list[dict[str, object]] = []
     release_timer: threading.Timer | None = None
@@ -870,7 +887,7 @@ def test_registered_cleanup_waits_for_delayed_lock_release_after_kill(
         term_group_checks[0] += 1
         # Initial identity succeeds, the outer TERM wait observes leader exit,
         # then the still-locked descendants remain signalable until KILL.
-        return term_group_checks[0] != 2
+        return term_group_checks[0] != 4
 
     def update(_job: Path, **values: object) -> bool:
         nonlocal release_timer
@@ -921,6 +938,557 @@ def test_original_group_remains_live_when_leader_is_gone_but_children_remain():
         h3_control, "process_start_signature", return_value="replacement-birth"
     ):
         assert not h3_control.original_process_group_alive(4242, "engine-birth")
+
+
+def test_runner_first_lock_publication_blocks_observer_until_metadata_is_new(
+    tmp_path: Path,
+):
+    runner = runner_module.H3Runner(SimpleNamespace(project_root=tmp_path))
+    publish_entered = threading.Event()
+    allow_publish = threading.Event()
+    publisher_holds_generation = threading.Event()
+    release_generation = threading.Event()
+    observer_started = threading.Event()
+    observer_done = threading.Event()
+    observation: list[tuple[bool, dict[str, object]]] = []
+    errors: list[BaseException] = []
+    real_write = runner_module._write_generation_lock_metadata
+
+    def delayed_write(lock_fd: int, **values: object) -> None:
+        publish_entered.set()
+        assert allow_publish.wait(5)
+        real_write(lock_fd, **values)
+
+    def publish() -> None:
+        try:
+            with runner._generation_lock():
+                publisher_holds_generation.set()
+                assert release_generation.wait(5)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    def observe() -> None:
+        try:
+            observer_started.set()
+            with h3_control.generation_lock_observation() as value:
+                observation.append(value)
+            observer_done.set()
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+        runner_module, "process_start_signature", return_value="controller-birth"
+    ), patch.object(
+        runner_module, "_write_generation_lock_metadata", side_effect=delayed_write
+    ):
+        publisher = threading.Thread(target=publish)
+        publisher.start()
+        assert publish_entered.wait(5)
+        observer = threading.Thread(target=observe)
+        observer.start()
+        assert observer_started.wait(5)
+        assert not observer_done.wait(0.15)
+        allow_publish.set()
+        assert publisher_holds_generation.wait(5)
+        assert observer_done.wait(5)
+        release_generation.set()
+        publisher.join(timeout=5)
+        observer.join(timeout=5)
+
+    assert not publisher.is_alive() and not observer.is_alive()
+    assert errors == []
+    lock_available, metadata = observation[0]
+    assert lock_available is False
+    assert metadata["controller_start_signature"] == "controller-birth"
+
+
+def test_cleanup_observer_cannot_make_stale_metadata_look_authorized(
+    tmp_path: Path,
+):
+    job_id = "5" * 20
+    job_dir = (tmp_path / "custom" / "h3-jobs" / job_id).resolve()
+    job_dir.mkdir(parents=True)
+    registration = register_starting_job(
+        tmp_path,
+        job_dir,
+        job_id,
+        "h3-jobs",
+        controller_pid=777,
+        controller_start_signature="controller-birth",
+    )
+    activate_job(
+        tmp_path,
+        registration.entry_path,
+        registration.token,
+        pgid=4242,
+        process_start_signature="engine-birth",
+    )
+    status = {
+        "pgid": 4242,
+        "controller_pid": 777,
+        "state": "running",
+        "updated_at": time.time(),
+        "process_start_signature": "engine-birth",
+        "controller_start_signature": "controller-birth",
+    }
+    (job_dir / "process.json").write_text(json.dumps(status), encoding="utf-8")
+    lock_path = tmp_path / "runtime" / "h3-generation.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "controller_pid": 777,
+                "controller_start_signature": "controller-birth",
+                "registration_token": registration.token,
+                "job_id": job_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = SimpleNamespace(
+        output_subdir="h3-jobs",
+        h3_binary=tmp_path / "h3",
+        auto_metrics_poll_seconds=2.0,
+    )
+    observer_entered = threading.Event()
+    release_observer = threading.Event()
+    control_started = threading.Event()
+    control_done = threading.Event()
+    selected: list[list[tuple[Path, dict[str, object]]]] = []
+    errors: list[BaseException] = []
+
+    def cleanup_observer() -> None:
+        try:
+            with h3_control.generation_lock_observation() as (available, _metadata):
+                assert available
+                observer_entered.set()
+                assert release_observer.wait(5)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    def list_control() -> None:
+        try:
+            control_started.set()
+            selected.append(h3_control.active_jobs())
+            control_done.set()
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    try:
+        with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+            h3_control, "load_config", return_value=config
+        ), patch.object(
+            h3_control, "process_start_signature", return_value=""
+        ), patch.object(h3_control, "process_alive", return_value=False), patch.object(
+            h3_control, "process_group_alive", return_value=True
+        ):
+            observer = threading.Thread(target=cleanup_observer)
+            observer.start()
+            assert observer_entered.wait(5)
+            controller = threading.Thread(target=list_control)
+            controller.start()
+            assert control_started.wait(5)
+            assert not control_done.wait(0.15)
+            release_observer.set()
+            observer.join(timeout=5)
+            controller.join(timeout=5)
+        assert errors == []
+        assert selected == [[]]
+    finally:
+        finish_job(registration, "test-cleanup")
+
+
+def test_cleanup_finalization_blocks_new_generation_publication(tmp_path: Path):
+    job_id = "6" * 20
+    job_dir = (tmp_path / "custom" / "h3-jobs" / job_id).resolve()
+    job_dir.mkdir(parents=True)
+    registration = register_starting_job(
+        tmp_path,
+        job_dir,
+        job_id,
+        "h3-jobs",
+        controller_pid=777,
+        controller_start_signature="controller-birth",
+    )
+    activate_job(
+        tmp_path,
+        registration.entry_path,
+        registration.token,
+        pgid=4242,
+        process_start_signature="engine-birth",
+    )
+    registered = list(registered_jobs(tmp_path, "h3-jobs"))[0]
+    config = SimpleNamespace(output_subdir="h3-jobs")
+    finalizer_entered = threading.Event()
+    release_finalizer = threading.Event()
+    publisher_started = threading.Event()
+    publisher_entered = threading.Event()
+    cleanup_result: list[str] = []
+    registry_seen_by_publisher: list[bool] = []
+    errors: list[BaseException] = []
+
+    def finalize() -> bool:
+        finalizer_entered.set()
+        assert release_finalizer.wait(5)
+        return h3_control._finalize_registered_locked(
+            config,
+            registered,
+            state="orphan-stale",
+            reason="test-finalize",
+        )
+
+    def cleanup() -> None:
+        try:
+            cleanup_result.append(
+                h3_control._registered_cleanup_state(registered, on_gone=finalize)
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    def publish() -> None:
+        try:
+            publisher_started.set()
+            with publication_control_guard(tmp_path):
+                publisher_entered.set()
+                registry_seen_by_publisher.append(registered.entry_path.exists())
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    try:
+        with patch.object(h3_control, "PROJECT_ROOT", tmp_path):
+            cleanup_thread = threading.Thread(target=cleanup)
+            cleanup_thread.start()
+            assert finalizer_entered.wait(5)
+            publisher_thread = threading.Thread(target=publish)
+            publisher_thread.start()
+            assert publisher_started.wait(5)
+            assert not publisher_entered.wait(0.15)
+            release_finalizer.set()
+            cleanup_thread.join(timeout=5)
+            publisher_thread.join(timeout=5)
+        assert errors == []
+        assert cleanup_result == ["finalized"]
+        assert registry_seen_by_publisher == [False]
+    finally:
+        finish_job(registration, "test-cleanup")
+
+
+def test_authorization_through_signal_blocks_new_publication(tmp_path: Path):
+    job_id = "7" * 20
+    job_dir = (tmp_path / "custom" / "h3-jobs" / job_id).resolve()
+    job_dir.mkdir(parents=True)
+    registration = register_starting_job(
+        tmp_path,
+        job_dir,
+        job_id,
+        "h3-jobs",
+        controller_pid=777,
+        controller_start_signature="controller-birth",
+    )
+    activate_job(
+        tmp_path,
+        registration.entry_path,
+        registration.token,
+        pgid=4242,
+        process_start_signature="engine-birth",
+    )
+    registered = list(registered_jobs(tmp_path, "h3-jobs"))[0]
+    status = {
+        "pgid": 4242,
+        "process_start_signature": "engine-birth",
+    }
+    config = SimpleNamespace(output_subdir="h3-jobs")
+    update_entered = threading.Event()
+    release_update = threading.Event()
+    publisher_started = threading.Event()
+    publisher_entered = threading.Event()
+    control_result: list[bool] = []
+    errors: list[BaseException] = []
+
+    def update(_job: Path, **_values: object) -> bool:
+        update_entered.set()
+        assert release_update.wait(5)
+        return True
+
+    def authorize_and_signal() -> None:
+        try:
+            control_result.append(
+                h3_control._authorized_update_control(
+                    config,
+                    job_dir,
+                    status,
+                    registered,
+                    pgid=4242,
+                    selected_signal=signal.SIGSTOP,
+                    paused=True,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    def publish() -> None:
+        try:
+            publisher_started.set()
+            with publication_control_guard(tmp_path):
+                publisher_entered.set()
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    try:
+        with held_generation_lock(
+            tmp_path, token=registration.token, job_id=job_id
+        ), patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+            h3_control, "_original_group_state", return_value="exact"
+        ), patch.object(h3_control, "update_control", side_effect=update):
+            control_thread = threading.Thread(target=authorize_and_signal)
+            control_thread.start()
+            assert update_entered.wait(5)
+            publisher_thread = threading.Thread(target=publish)
+            publisher_thread.start()
+            assert publisher_started.wait(5)
+            assert not publisher_entered.wait(0.15)
+            release_update.set()
+            control_thread.join(timeout=5)
+            publisher_thread.join(timeout=5)
+        assert errors == []
+        assert control_result == [True]
+    finally:
+        finish_job(registration, "test-cleanup")
+
+
+def test_cleanup_reauthorizes_each_legacy_candidate_and_deduplicates_identity(
+    tmp_path: Path,
+):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    duplicate = tmp_path / "duplicate"
+    for path in (first, second, duplicate):
+        path.mkdir()
+        (path / "process.json").write_text("{}", encoding="utf-8")
+    first_status = {
+        "pgid": 4242,
+        "state": "running",
+        "updated_at": time.time(),
+        "process_start_signature": "first-birth",
+    }
+    second_status = {
+        "pgid": 5252,
+        "state": "running",
+        "updated_at": time.time(),
+        "process_start_signature": "second-birth",
+    }
+    updates: list[tuple[Path, signal.Signals]] = []
+    authorizations = iter([True, True, False])
+    config = SimpleNamespace(
+        output_subdir="h3-jobs",
+        h3_binary=tmp_path / "h3",
+        auto_metrics_poll_seconds=2.0,
+    )
+
+    def update(job: Path, **values: object) -> bool:
+        updates.append((job, values["selected_signal"]))
+        return True
+
+    with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+        h3_control, "load_config", return_value=config
+    ), patch.object(
+        h3_control,
+        "orphan_jobs",
+        return_value=[
+            (first, first_status),
+            (duplicate, dict(first_status)),
+            (second, second_status),
+        ],
+    ), patch.object(
+        h3_control,
+        "_legacy_control_authorized",
+        side_effect=lambda *_args: next(authorizations),
+    ), patch.object(
+        h3_control, "_original_group_state", return_value="reused"
+    ), patch.object(
+        h3_control, "process_group_alive", return_value=False
+    ), patch.object(h3_control, "update_control", side_effect=update):
+        assert h3_control.cleanup_orphans() == 2
+
+    assert updates == [
+        (first, signal.SIGCONT),
+        (first, signal.SIGTERM),
+    ]
+
+
+def test_registered_orphan_never_downgrades_to_legacy_after_token_superseded(
+    tmp_path: Path,
+):
+    job_id = "8" * 20
+    job_dir = (tmp_path / "custom" / "h3-jobs" / job_id).resolve()
+    job_dir.mkdir(parents=True)
+    old = register_starting_job(
+        tmp_path,
+        job_dir,
+        job_id,
+        "h3-jobs",
+        controller_pid=777,
+        controller_start_signature="old-controller",
+    )
+    activate_job(
+        tmp_path,
+        old.entry_path,
+        old.token,
+        pgid=4242,
+        process_start_signature="old-engine",
+    )
+    snapshot = {
+        "pgid": 4242,
+        "controller_pid": 777,
+        "state": "running",
+        "process_start_signature": "old-engine",
+        "controller_start_signature": "old-controller",
+        "_registry_trusted": True,
+        "_registration_token": old.token,
+    }
+    finish_job(old, "superseded")
+    new = register_starting_job(
+        tmp_path,
+        job_dir,
+        job_id,
+        "h3-jobs",
+        controller_pid=888,
+        controller_start_signature="new-controller",
+    )
+    activate_job(
+        tmp_path,
+        new.entry_path,
+        new.token,
+        pgid=5252,
+        process_start_signature="new-engine",
+    )
+    new_status = {
+        "pgid": 5252,
+        "controller_pid": 888,
+        "state": "running",
+        "process_start_signature": "new-engine",
+        "controller_start_signature": "new-controller",
+    }
+    new_control = {"paused": False, "policy": "max"}
+    (job_dir / "process.json").write_text(json.dumps(new_status), encoding="utf-8")
+    (job_dir / "control.json").write_text(json.dumps(new_control), encoding="utf-8")
+    config = SimpleNamespace(
+        output_subdir="h3-jobs",
+        h3_binary=tmp_path / "h3",
+        auto_metrics_poll_seconds=2.0,
+    )
+    try:
+        with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+            h3_control, "load_config", return_value=config
+        ), patch.object(
+            h3_control, "orphan_jobs", return_value=[(job_dir, snapshot)]
+        ), patch.object(h3_control, "_legacy_control_authorized") as legacy, patch.object(
+            h3_control, "update_control"
+        ) as update:
+            assert h3_control.cleanup_orphans() == 1
+        legacy.assert_not_called()
+        update.assert_not_called()
+        assert json.loads((job_dir / "process.json").read_text()) == new_status
+        assert json.loads((job_dir / "control.json").read_text()) == new_control
+    finally:
+        finish_job(new, "test-cleanup")
+
+
+def test_legacy_cleanup_cannot_overwrite_new_registered_job_in_same_directory(
+    tmp_path: Path,
+):
+    job_id = "9" * 20
+    job_dir = (tmp_path / "custom" / "h3-jobs" / job_id).resolve()
+    job_dir.mkdir(parents=True)
+    legacy_snapshot = {
+        "pgid": 4242,
+        "state": "running",
+        "updated_at": time.time(),
+        "process_start_signature": "legacy-birth",
+    }
+    new = register_starting_job(
+        tmp_path,
+        job_dir,
+        job_id,
+        "h3-jobs",
+        controller_pid=888,
+        controller_start_signature="new-controller",
+    )
+    activate_job(
+        tmp_path,
+        new.entry_path,
+        new.token,
+        pgid=5252,
+        process_start_signature="new-engine",
+    )
+    new_status = {
+        "pgid": 5252,
+        "controller_pid": 888,
+        "state": "running",
+        "process_start_signature": "new-engine",
+        "controller_start_signature": "new-controller",
+    }
+    new_control = {"paused": False, "policy": "max"}
+    (job_dir / "process.json").write_text(json.dumps(new_status), encoding="utf-8")
+    (job_dir / "control.json").write_text(json.dumps(new_control), encoding="utf-8")
+    config = SimpleNamespace(
+        output_subdir="h3-jobs",
+        h3_binary=tmp_path / "h3",
+        auto_metrics_poll_seconds=2.0,
+    )
+    try:
+        with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+            h3_control, "load_config", return_value=config
+        ), patch.object(
+            h3_control,
+            "orphan_jobs",
+            return_value=[(job_dir, legacy_snapshot)],
+        ), patch.object(
+            h3_control, "_legacy_control_authorized", return_value=True
+        ) as legacy, patch.object(h3_control, "update_control") as update:
+            assert h3_control.cleanup_orphans() == 1
+        legacy.assert_not_called()
+        update.assert_not_called()
+        assert json.loads((job_dir / "process.json").read_text()) == new_status
+        assert json.loads((job_dir / "control.json").read_text()) == new_control
+    finally:
+        finish_job(new, "test-cleanup")
+
+
+def test_legacy_control_rejects_birth_mismatch_inside_generation_transaction(
+    tmp_path: Path,
+):
+    job_dir = tmp_path / "legacy"
+    job_dir.mkdir()
+    status = {
+        "pgid": 4242,
+        "state": "running",
+        "updated_at": time.time(),
+        "process_start_signature": "old-birth",
+    }
+    config = SimpleNamespace(
+        output_subdir="h3-jobs",
+        h3_binary=tmp_path / "h3",
+        auto_metrics_poll_seconds=2.0,
+    )
+    with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+        h3_control, "process_group_alive", return_value=True
+    ), patch.object(
+        h3_control, "process_start_signature", return_value="replacement-birth"
+    ), patch.object(h3_control, "process_matches_h3", return_value=True), patch.object(
+        h3_control, "update_control"
+    ) as update:
+        assert not h3_control._authorized_update_control(
+            config,
+            job_dir,
+            status,
+            None,
+            pgid=4242,
+            selected_signal=signal.SIGSTOP,
+            paused=True,
+        )
+    update.assert_not_called()
 
 
 def test_locked_cli_control_really_stops_and_resumes_group(tmp_path: Path):

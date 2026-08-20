@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -14,10 +15,19 @@ from unittest.mock import Mock, patch
 import pytest
 
 from h3_bridge.config import BridgeConfig
-from h3_bridge.job_registry import registered_jobs
+from h3_bridge.job_registry import finish_job, registered_jobs
 from h3_bridge.models import H3Reference, H3Request
 from h3_bridge.profiles import QUALITY_PROFILES
-from h3_bridge.runner import H3Runner, _terminate_process_group
+from h3_bridge.runner import (
+    H3Runner,
+    _original_process_group_alive,
+    _original_process_group_state,
+    _stable_process_start_signature,
+    _terminate_process_group,
+    _wait_for_original_group_exit,
+)
+from scripts import h3_control
+from h3_bridge import runner as runner_module
 
 
 def make_runner(tmp_path: Path) -> H3Runner:
@@ -285,6 +295,155 @@ def test_generation_lock_rejects_a_second_comfy_instance(tmp_path: Path):
                 raise AssertionError("unreachable")
 
 
+@patch(
+    "h3_bridge.runner.os.uname",
+    return_value=SimpleNamespace(sysname="Darwin", machine="arm64"),
+)
+def test_second_lock_metadata_publication_blocks_observer_until_exact_token(
+    _uname, tmp_path: Path
+):
+    runner = make_runner(tmp_path)
+    request = H3Request(prompt="second publication", resource_profile="max")
+    second_write_entered = threading.Event()
+    release_second_write = threading.Event()
+    observer_started = threading.Event()
+    observer_done = threading.Event()
+    render_done = threading.Event()
+    observation: list[tuple[bool, dict[str, object]]] = []
+    errors: list[BaseException] = []
+    writes = 0
+    writes_lock = threading.Lock()
+    real_write = runner_module._write_generation_lock_metadata
+
+    def delayed_write(lock_fd: int, **values: object) -> None:
+        nonlocal writes
+        real_write(lock_fd, **values)
+        with writes_lock:
+            writes += 1
+            selected_write = writes
+        if selected_write == 2:
+            second_write_entered.set()
+            assert release_second_write.wait(5)
+
+    def render() -> None:
+        try:
+            runner.run(request, tmp_path / "output")
+            render_done.set()
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    def observe() -> None:
+        try:
+            observer_started.set()
+            with h3_control.generation_lock_observation() as value:
+                observation.append(value)
+            observer_done.set()
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    with patch("h3_bridge.runner.shutil.which", return_value="/usr/bin/true"), patch.object(
+        h3_control, "PROJECT_ROOT", tmp_path
+    ), patch.object(
+        runner_module, "_write_generation_lock_metadata", side_effect=delayed_write
+    ):
+        render_thread = threading.Thread(target=render)
+        render_thread.start()
+        assert second_write_entered.wait(5)
+        observer_thread = threading.Thread(target=observe)
+        observer_thread.start()
+        assert observer_started.wait(5)
+        assert not observer_done.wait(0.15)
+        release_second_write.set()
+        assert observer_done.wait(5)
+        render_thread.join(timeout=5)
+        observer_thread.join(timeout=5)
+
+    assert not render_thread.is_alive() and not observer_thread.is_alive()
+    assert render_done.is_set()
+    assert errors == []
+    lock_available, metadata = observation[0]
+    assert lock_available is False
+    assert metadata["registration_token"]
+    assert metadata["job_id"]
+
+
+def test_runner_retries_transient_process_birth_and_rejects_empty_identity():
+    signatures = iter(["", "engine-birth"])
+    with patch(
+        "h3_bridge.runner.process_start_signature",
+        side_effect=lambda _pid: next(signatures),
+    ), patch("h3_bridge.runner.time.sleep"):
+        assert _stable_process_start_signature(4242) == "engine-birth"
+
+    with patch(
+        "h3_bridge.runner.process_start_signature", return_value=""
+    ), patch("h3_bridge.runner.time.sleep"):
+        assert _stable_process_start_signature(4242, attempts=3) == ""
+
+
+def test_runner_process_group_identity_fails_closed_on_ambiguous_birth():
+    with patch("h3_bridge.runner.process_group_alive", return_value=True), patch(
+        "h3_bridge.runner._stable_process_start_signature", return_value=""
+    ), patch("h3_bridge.runner.os.kill"):
+        assert not _original_process_group_alive(4242, "engine-birth")
+
+    with patch("h3_bridge.runner.process_group_alive", return_value=True), patch(
+        "h3_bridge.runner._stable_process_start_signature", return_value=""
+    ), patch("h3_bridge.runner.os.kill", side_effect=ProcessLookupError):
+        assert _original_process_group_alive(4242, "engine-birth")
+
+    with patch("h3_bridge.runner.process_group_alive") as group_alive:
+        assert not _original_process_group_alive(4242, "")
+    group_alive.assert_not_called()
+
+
+def test_runner_process_group_state_keeps_ambiguous_distinct_from_exit():
+    with patch("h3_bridge.runner.process_group_alive", return_value=True), patch(
+        "h3_bridge.runner._stable_process_start_signature", return_value=""
+    ), patch("h3_bridge.runner.os.kill"):
+        assert _original_process_group_state(4242, "engine-birth") == "ambiguous"
+
+    with patch(
+        "h3_bridge.runner._original_process_group_state", return_value="ambiguous"
+    ):
+        assert not _wait_for_original_group_exit(4242, "engine-birth", 0)
+
+
+def test_termination_never_signals_an_ambiguous_process_group():
+    process = SimpleNamespace(pid=4242, wait=Mock())
+    with patch(
+        "h3_bridge.runner._original_process_group_state", return_value="ambiguous"
+    ), patch("h3_bridge.runner.os.killpg") as kill_group:
+        assert not _terminate_process_group(process, "engine-birth")
+    kill_group.assert_not_called()
+    process.wait.assert_not_called()
+
+
+@patch(
+    "h3_bridge.runner.os.uname",
+    return_value=SimpleNamespace(sysname="Darwin", machine="arm64"),
+)
+def test_completed_job_keeps_registry_when_group_exit_is_ambiguous(
+    _uname, tmp_path: Path
+):
+    runner = make_runner(tmp_path)
+    request = H3Request(prompt="ambiguous exit", resource_profile="max")
+    with patch("h3_bridge.runner.shutil.which", return_value="/usr/bin/true"), patch(
+        "h3_bridge.runner._original_process_group_state",
+        return_value="ambiguous",
+    ):
+        result = runner.run(request, tmp_path / "output")
+
+    selected = list(registered_jobs(tmp_path, "h3-jobs"))
+    try:
+        assert result.output_path.is_file()
+        assert len(selected) == 1
+        assert selected[0].registry_state == "cleanup-needed"
+    finally:
+        for registration in selected:
+            finish_job(registration, "test-cleanup")
+
+
 def test_termination_reports_leader_or_child_group_residue():
     process = SimpleNamespace(
         pid=4242,
@@ -297,7 +456,7 @@ def test_termination_reports_leader_or_child_group_residue():
     )
     signals: list[signal.Signals] = []
     with patch(
-        "h3_bridge.runner._original_process_group_alive", return_value=True
+        "h3_bridge.runner._original_process_group_state", return_value="exact"
     ), patch(
         "h3_bridge.runner._wait_for_original_group_exit", return_value=False
     ), patch(

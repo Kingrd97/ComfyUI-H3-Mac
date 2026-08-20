@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,16 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from h3_bridge.job_registry import abandon_starting_job, activate_job
 from h3_bridge.scheduler import process_start_signature
+
+
+def stable_process_start_signature(pid: int, attempts: int = 5) -> str:
+    for attempt in range(max(1, attempts)):
+        signature = process_start_signature(pid)
+        if signature:
+            return signature
+        if attempt + 1 < attempts:
+            time.sleep(0.05)
+    return ""
 
 
 def main() -> int:
@@ -42,7 +53,7 @@ def main() -> int:
         )
         return 0
     pgid = os.getpid()
-    signature = process_start_signature(pgid)
+    signature = stable_process_start_signature(pgid)
     activate_job(
         args.project_root,
         args.registry,

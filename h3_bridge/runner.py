@@ -20,6 +20,7 @@ from typing import Callable, Iterator, TextIO
 
 from .config import BridgeConfig
 from .job_registry import finish_job, mark_cleanup_needed, register_starting_job
+from .locking import publication_control_guard
 from .models import H3Request, H3Result
 from .profiles import QUALITY_PROFILES, process_prefix, should_stream
 from .scheduler import AdaptiveScheduler, process_group_alive, process_start_signature
@@ -38,6 +39,8 @@ _LARGE_JOB_ENV = "H3_ALLOW_LARGE_JOB"
 _VERIFIED_MANIFESTS: set[tuple[str, int, int, str]] = set()
 _MANIFEST_CACHE_LOCK = threading.Lock()
 _GENERATION_LOCK_SCHEMA_VERSION = 1
+_PROCESS_SIGNATURE_ATTEMPTS = 5
+_PROCESS_SIGNATURE_RETRY_SECONDS = 0.05
 
 
 def _write_generation_lock_metadata(
@@ -122,14 +125,69 @@ def _h3_aligned_frames(requested: int) -> int:
     return value if remainder == 0 else value + 17 - remainder
 
 
+def _original_process_group_state(pgid: int, expected_birth: str) -> str:
+    """Classify a launched process group without collapsing ambiguity into exit."""
+
+    if pgid <= 1:
+        return "gone"
+    if not expected_birth:
+        return "ambiguous"
+    if not process_group_alive(pgid):
+        return "gone"
+    current_birth = _stable_process_start_signature(pgid, attempts=3)
+    if current_birth:
+        return "exact" if current_birth == expected_birth else "reused"
+    try:
+        os.kill(pgid, 0)
+    except ProcessLookupError:
+        # The original leader is gone. A still-existing PGID can only be its
+        # remaining descendants; a PGID cannot be reused while that group lives.
+        return "leaderless" if process_group_alive(pgid) else "gone"
+    except PermissionError:
+        pass
+    # A leader still exists but ps could not fingerprint it. This is ambiguous,
+    # so fail closed rather than signalling a potentially reused PID.
+    return "ambiguous"
+
+
 def _original_process_group_alive(pgid: int, expected_birth: str) -> bool:
-    if pgid <= 1 or not process_group_alive(pgid):
-        return False
-    current_birth = process_start_signature(pgid)
-    # If the leader disappeared but children remain, ps cannot report its
-    # birth. The still-existing PGID nevertheless belongs to the old group.
-    # A different non-empty birth means the numeric ID was safely reused.
-    return not current_birth or not expected_birth or current_birth == expected_birth
+    return _original_process_group_state(pgid, expected_birth) in {
+        "exact",
+        "leaderless",
+    }
+
+
+def _stable_process_start_signature(
+    pid: int,
+    attempts: int = _PROCESS_SIGNATURE_ATTEMPTS,
+) -> str:
+    """Require a non-empty PID birth fingerprint before opening the gate."""
+
+    for attempt in range(max(1, attempts)):
+        signature = process_start_signature(pid)
+        if signature:
+            return signature
+        if attempt + 1 < attempts:
+            time.sleep(_PROCESS_SIGNATURE_RETRY_SECONDS)
+    return ""
+
+
+def _abort_gated_launcher(process: subprocess.Popen[bytes], gate_fd: int) -> None:
+    """Bound cleanup of a known direct child that has not crossed its gate."""
+
+    if gate_fd >= 0:
+        os.close(gate_fd)
+    try:
+        process.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        process.terminate()
+    try:
+        process.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        process.kill()
+    process.wait(timeout=2)
 
 
 def _wait_for_original_group_exit(
@@ -139,10 +197,10 @@ def _wait_for_original_group_exit(
 ) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not _original_process_group_alive(pgid, expected_birth):
+        if _original_process_group_state(pgid, expected_birth) in {"gone", "reused"}:
             return True
         time.sleep(0.05)
-    return not _original_process_group_alive(pgid, expected_birth)
+    return _original_process_group_state(pgid, expected_birth) in {"gone", "reused"}
 
 
 def _terminate_process_group(
@@ -152,8 +210,11 @@ def _terminate_process_group(
     """Bound termination and confirm no original group member still holds FDs."""
 
     pgid = process.pid
-    if not _original_process_group_alive(pgid, expected_birth):
+    initial_state = _original_process_group_state(pgid, expected_birth)
+    if initial_state in {"gone", "reused"}:
         return True
+    if initial_state == "ambiguous":
+        return False
     try:
         os.killpg(pgid, signal.SIGCONT)
         os.killpg(pgid, signal.SIGTERM)
@@ -165,6 +226,11 @@ def _terminate_process_group(
         pass
     if _wait_for_original_group_exit(pgid, expected_birth, 0.5):
         return True
+    pre_kill_state = _original_process_group_state(pgid, expected_birth)
+    if pre_kill_state in {"gone", "reused"}:
+        return True
+    if pre_kill_state == "ambiguous":
+        return False
     try:
         os.killpg(pgid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
@@ -532,30 +598,31 @@ class H3Runner:
         lock_path = self.config.project_root / "runtime" / "h3-generation.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+", encoding="utf-8") as lock:
-            try:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise RuntimeError(
-                    "Another H3 generation is already running in this installation. "
-                    "Wait for it to finish or cancel it before starting another shot."
-                ) from exc
-            try:
+            with publication_control_guard(self.config.project_root):
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as exc:
+                    raise RuntimeError(
+                        "Another H3 generation is already running in this installation. "
+                        "Wait for it to finish or cancel it before starting another shot."
+                    ) from exc
                 controller_pid = os.getpid()
+                controller_signature = _stable_process_start_signature(controller_pid)
+                if not controller_signature:
+                    raise RuntimeError(
+                        "Could not obtain a stable H3 controller process identity."
+                    )
                 _write_generation_lock_metadata(
                     lock.fileno(),
                     controller_pid=controller_pid,
-                    controller_start_signature=process_start_signature(
-                        controller_pid
-                    ),
+                    controller_start_signature=controller_signature,
                 )
-                yield lock
-            finally:
-                # Do not issue LOCK_UN here. The launcher inherits this exact
-                # open-file-description, so explicitly unlocking the parent
-                # descriptor would also release the child's safety lock. The
-                # surrounding close releases it only after the final inherited
-                # descriptor exits.
-                pass
+            # Do not issue LOCK_UN here. The launcher inherits this exact
+            # open-file-description, so explicitly unlocking the parent
+            # descriptor would also release the child's safety lock. The
+            # surrounding close releases it only after the final inherited
+            # descriptor exits.
+            yield lock
 
     def run(
         self,
@@ -618,7 +685,11 @@ class H3Runner:
         engine_signature = ""
         registry_cleanup_safe = True
         controller_pid = os.getpid()
-        controller_signature = process_start_signature(controller_pid)
+        controller_signature = _stable_process_start_signature(controller_pid)
+        if not controller_signature:
+            raise RuntimeError(
+                "Could not obtain a stable H3 controller process identity."
+            )
         registration = register_starting_job(
             self.config.project_root,
             job_dir,
@@ -628,13 +699,14 @@ class H3Runner:
             controller_start_signature=controller_signature,
             engine_profile=request.resource_profile,
         )
-        _write_generation_lock_metadata(
-            generation_lock_fd,
-            controller_pid=controller_pid,
-            controller_start_signature=controller_signature,
-            registration_token=registration.token,
-            job_id=job_id,
-        )
+        with publication_control_guard(self.config.project_root):
+            _write_generation_lock_metadata(
+                generation_lock_fd,
+                controller_pid=controller_pid,
+                controller_start_signature=controller_signature,
+                registration_token=registration.token,
+                job_id=job_id,
+            )
         terminal_state = "failed"
         launcher = Path(__file__).with_name("h3_launch.py").resolve(strict=True)
         launch_command = [
@@ -692,7 +764,15 @@ class H3Runner:
                     ack_write_fd = -1
                 assert process.stdout is not None
                 registry_cleanup_safe = False
-                engine_signature = process_start_signature(process.pid)
+                engine_signature = _stable_process_start_signature(process.pid)
+                if not engine_signature:
+                    gated_fd = gate_write_fd
+                    gate_write_fd = -1
+                    _abort_gated_launcher(process, gated_fd)
+                    registry_cleanup_safe = True
+                    raise RuntimeError(
+                        "Could not obtain a stable H3 launcher process identity."
+                    )
                 scheduler = AdaptiveScheduler(
                     job_dir,
                     process.pid,
@@ -780,9 +860,9 @@ class H3Runner:
                     handle_records(framer.feed(decoder.decode(b"", final=True)))
                     handle_records(framer.finish())
                 return_code = process.wait()
-                registry_cleanup_safe = not _original_process_group_alive(
+                registry_cleanup_safe = _original_process_group_state(
                     process.pid, engine_signature
-                )
+                ) in {"gone", "reused"}
                 if return_code != 0:
                     raise RuntimeError(f"h3.c exited with status {return_code}. See {log_path}")
                 if not partial_path.is_file() or partial_path.stat().st_size == 0:
@@ -817,7 +897,7 @@ class H3Runner:
             else:
                 mark_cleanup_needed(
                     registration,
-                    f"{terminal_state}: process group still alive",
+                    f"{terminal_state}: process group exit unverified",
                 )
 
         elapsed = time.monotonic() - started

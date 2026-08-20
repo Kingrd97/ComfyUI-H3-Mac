@@ -23,6 +23,7 @@ from h3_bridge.job_registry import (  # noqa: E402
     registered_jobs,
     remove_registered_job,
 )
+from h3_bridge.locking import publication_control_guard  # noqa: E402
 from h3_bridge.scheduler import (  # noqa: E402
     process_group_alive,
     process_start_signature,
@@ -110,8 +111,9 @@ def _read_lock_metadata(lock: TextIO) -> dict[str, object]:
 
 
 @contextmanager
-def generation_lock_observation() -> Iterator[tuple[bool, dict[str, object]]]:
-    """Hold an available lock, or read the identity of its current holder."""
+def _generation_lock_observation_guarded(
+) -> Iterator[tuple[bool, dict[str, object]]]:
+    """Observe the generation lock while the publication guard is held."""
 
     lock_path = PROJECT_ROOT / "runtime" / "h3-generation.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,6 +130,15 @@ def generation_lock_observation() -> Iterator[tuple[bool, dict[str, object]]]:
         finally:
             if acquired:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def generation_lock_observation() -> Iterator[tuple[bool, dict[str, object]]]:
+    """Serialize an observation against runner publication and CLI control."""
+
+    with publication_control_guard(PROJECT_ROOT):
+        with _generation_lock_observation_guarded() as observation:
+            yield observation
 
 
 def _lock_matches_registration(
@@ -194,6 +205,7 @@ def _job_status_candidates(
     output_subdir = str(getattr(config, "output_subdir"))
     selected: list[tuple[Path, dict[str, object], bool]] = []
     seen: set[Path] = set()
+    seen_identities: set[tuple[int, str]] = set()
     for registration in registered_jobs(PROJECT_ROOT, output_subdir):
         status_path = registration.job_dir / "process.json"
         if status_path.is_symlink():
@@ -212,6 +224,9 @@ def _job_status_candidates(
             status = _registry_status(registration)
         selected.append((registration.job_dir, status, True))
         seen.add(registration.job_dir)
+        seen_identities.add(
+            (registration.pgid, registration.process_start_signature)
+        )
 
     legacy_base = (PROJECT_ROOT / "runtime" / "ComfyUI" / "output").resolve()
     legacy_root = (legacy_base / output_subdir).resolve()
@@ -223,7 +238,19 @@ def _job_status_candidates(
         job_dir = status_path.parent.resolve()
         if job_dir in seen or job_dir.parent != legacy_root:
             continue
-        selected.append((job_dir, read_json(status_path), False))
+        status = read_json(status_path)
+        try:
+            identity = (
+                int(status.get("pgid", 0)),
+                str(status.get("process_start_signature", "")),
+            )
+        except (TypeError, ValueError):
+            identity = (0, "")
+        if identity[0] > 1 and identity[1]:
+            if identity in seen_identities:
+                continue
+            seen_identities.add(identity)
+        selected.append((job_dir, status, False))
         seen.add(job_dir)
     return selected
 
@@ -246,7 +273,13 @@ def orphan_jobs() -> list[tuple[Path, dict[str, object]]]:
         if min(pgid, controller_pid) <= 1 or not engine_birth or not controller_birth:
             # Legacy/incomplete status is deliberately never auto-terminated.
             continue
+        registration: RegisteredJob | None = None
         if registry_trusted:
+            registration = _matching_registration(config, job_dir, status)
+            if registration is None:
+                # Never downgrade a two-sided registry candidate into the
+                # legacy path if its token changed during discovery.
+                continue
             if not original_process_group_alive(pgid, engine_birth):
                 continue
         elif (
@@ -266,7 +299,11 @@ def orphan_jobs() -> list[tuple[Path, dict[str, object]]]:
             and current_controller_birth == controller_birth
         ):
             continue
-        selected.append((job_dir, status))
+        selected_status = dict(status)
+        if registration is not None:
+            selected_status["_registry_trusted"] = True
+            selected_status["_registration_token"] = registration.token
+        selected.append((job_dir, selected_status))
     return selected
 
 
@@ -311,7 +348,16 @@ def _registered_group_is_signalable(
 def _registered_control_authorized(registration: RegisteredJob) -> bool:
     """Authorize interactive control only for the exact inherited-lock owner."""
 
-    with generation_lock_observation() as (lock_available, metadata):
+    with publication_control_guard(PROJECT_ROOT):
+        return _registered_control_authorized_guarded(registration)
+
+
+def _registered_control_authorized_guarded(
+    registration: RegisteredJob,
+) -> bool:
+    """Authorize while the caller holds the publication/control guard."""
+
+    with _generation_lock_observation_guarded() as (lock_available, metadata):
         if lock_available:
             return False
         if not _registration_is_current(registration):
@@ -410,14 +456,105 @@ def _finalize_registered_locked(
     return True
 
 
+def _state_after_denied_control(
+    config: object,
+    job_dir: Path,
+    registration: RegisteredJob | None,
+    *,
+    pgid: int,
+    expected_birth: str,
+    stage: str,
+) -> str:
+    """Reclassify a denied signal without turning normal exit into failure."""
+
+    if registration is not None:
+        return _registered_cleanup_state(
+            registration,
+            deadline_seconds=1.5,
+            on_gone=lambda: _finalize_registered_locked(
+                config,
+                registration,
+                state=("orphan-stale" if stage == "CONT" else "orphan-terminated"),
+                reason=f"process-exited-before-{stage.lower()}",
+            ),
+        )
+    return _finalize_legacy_if_gone(
+        job_dir,
+        pgid=pgid,
+        expected_birth=expected_birth,
+        state=("orphan-stale" if stage == "CONT" else "orphan-terminated"),
+        reason=f"process-exited-before-{stage.lower()}",
+    )
+
+
+def _job_dir_has_live_registry_claim(job_dir: Path) -> bool:
+    marker = job_dir / ".h3-job-registry.json"
+    if marker.is_symlink():
+        return True
+    value = read_json(marker)
+    token = str(value.get("token", ""))
+    if len(token) != 32 or any(character not in "0123456789abcdef" for character in token):
+        return False
+    entry = PROJECT_ROOT / "runtime" / "job-registry" / f"{token}.json"
+    if entry.is_symlink():
+        return True
+    peer = read_json(entry)
+    return (
+        peer.get("token") == token
+        and peer.get("state") in {"starting", "active", "cleanup-needed"}
+        and str(peer.get("job_dir", "")) == str(job_dir)
+        and value.get("token") == peer.get("token")
+        and str(value.get("job_dir", "")) == str(peer.get("job_dir", ""))
+    )
+
+
+def _finalize_legacy_if_gone(
+    job_dir: Path,
+    *,
+    pgid: int,
+    expected_birth: str,
+    state: str,
+    reason: str,
+) -> str:
+    """Write a legacy terminal status only while excluding a new generation."""
+
+    with publication_control_guard(PROJECT_ROOT):
+        with _generation_lock_observation_guarded() as (lock_available, _metadata):
+            if _job_dir_has_live_registry_claim(job_dir):
+                return "superseded"
+            if not lock_available:
+                return "ambiguous"
+            group_state = _original_group_state(pgid, expected_birth)
+            if group_state not in {"gone", "reused"}:
+                return group_state
+            _record_orphan_terminal(job_dir, state=state, reason=reason)
+            return "finalized"
+
+
 def cleanup_orphans() -> int:
     cleaned = 0
     failed = False
+    seen_identities: set[tuple[int, str]] = set()
     config = load_config()
     for job_dir, status in orphan_jobs():
         pgid = int(status["pgid"])
         expected_birth = str(status["process_start_signature"])
+        identity = (pgid, expected_birth)
+        if identity in seen_identities:
+            continue
+        seen_identities.add(identity)
         registration = _matching_registration(config, job_dir, status)
+        registry_trusted = bool(status.get("_registry_trusted"))
+        expected_token = str(status.get("_registration_token", ""))
+        if registry_trusted and (
+            registration is None or registration.token != expected_token
+        ):
+            print(
+                f"{job_dir.name}: 注册已被新任务替代，跳过清理 / "
+                "registry was superseded; cleanup skipped"
+            )
+            cleaned += 1
+            continue
         if registration is not None:
             initial_state = _registered_cleanup_state(
                 registration,
@@ -445,13 +582,59 @@ def cleanup_orphans() -> int:
                 )
                 failed = True
                 continue
-        update_control(
+        if not _authorized_update_control(
+            config,
             job_dir,
+            status,
+            registration,
             pgid=pgid,
             selected_signal=signal.SIGCONT,
             paused=False,
-        )
-        update_control(job_dir, pgid=pgid, selected_signal=signal.SIGTERM)
+        ):
+            denied_state = _state_after_denied_control(
+                config,
+                job_dir,
+                registration,
+                pgid=pgid,
+                expected_birth=expected_birth,
+                stage="CONT",
+            )
+            if denied_state in {"finalized", "superseded"}:
+                cleaned += 1
+            else:
+                print(
+                    f"{job_dir.name}: CONT 前任务身份无法安全确认，未发送信号 / "
+                    "job identity could not be safely confirmed before CONT",
+                    file=sys.stderr,
+                )
+                failed = True
+            continue
+        if not _authorized_update_control(
+            config,
+            job_dir,
+            status,
+            registration,
+            pgid=pgid,
+            selected_signal=signal.SIGTERM,
+        ):
+            denied_state = _state_after_denied_control(
+                config,
+                job_dir,
+                registration,
+                pgid=pgid,
+                expected_birth=expected_birth,
+                stage="TERM",
+            )
+            if denied_state in {"finalized", "superseded"}:
+                cleaned += 1
+            else:
+                print(
+                    f"{job_dir.name}: TERM 前任务身份无法安全确认，未发送信号 / "
+                    "job identity could not be safely confirmed before TERM",
+                    file=sys.stderr,
+                )
+                failed = True
+            continue
         deadline = time.monotonic() + 3.0
         while process_group_alive(pgid) and time.monotonic() < deadline:
             time.sleep(0.1)
@@ -485,7 +668,32 @@ def cleanup_orphans() -> int:
             failed = True
             continue
         if should_kill:
-            update_control(job_dir, pgid=pgid, selected_signal=signal.SIGKILL)
+            if not _authorized_update_control(
+                config,
+                job_dir,
+                status,
+                registration,
+                pgid=pgid,
+                selected_signal=signal.SIGKILL,
+            ):
+                denied_state = _state_after_denied_control(
+                    config,
+                    job_dir,
+                    registration,
+                    pgid=pgid,
+                    expected_birth=expected_birth,
+                    stage="KILL",
+                )
+                if denied_state in {"finalized", "superseded"}:
+                    cleaned += 1
+                else:
+                    print(
+                        f"{job_dir.name}: KILL 前任务身份无法安全确认，未发送信号 / "
+                        "job identity could not be safely confirmed before KILL",
+                        file=sys.stderr,
+                    )
+                    failed = True
+                continue
             kill_deadline = time.monotonic() + 1.0
             while process_group_alive(pgid) and time.monotonic() < kill_deadline:
                 time.sleep(0.05)
@@ -506,8 +714,18 @@ def cleanup_orphans() -> int:
                 continue
             exit_unverified = True
         else:
-            post_kill_state = _original_group_state(pgid, expected_birth)
-            exit_unverified = post_kill_state not in {"gone", "reused"}
+            post_kill_state = _finalize_legacy_if_gone(
+                job_dir,
+                pgid=pgid,
+                expected_birth=expected_birth,
+                state="orphan-terminated",
+                reason="controller-exited",
+            )
+            if post_kill_state in {"finalized", "superseded"}:
+                print(f"{job_dir.name}: 已清理孤儿 H3 进程 / orphan H3 terminated")
+                cleaned += 1
+                continue
+            exit_unverified = True
         if exit_unverified:
             print(
                 f"{job_dir.name}: 无法确认孤儿进程已退出，保留运行状态 / "
@@ -516,13 +734,6 @@ def cleanup_orphans() -> int:
             )
             failed = True
             continue
-        # Registered jobs finalize inside the flock observation above. Only
-        # the strict legacy fallback reaches this unregistered path.
-        _record_orphan_terminal(
-            job_dir, state="orphan-terminated", reason="controller-exited"
-        )
-        print(f"{job_dir.name}: 已清理孤儿 H3 进程 / orphan H3 terminated")
-        cleaned += 1
     return -1 if failed else cleaned
 
 
@@ -631,6 +842,44 @@ def update_control(
     return signalled
 
 
+def _authorized_update_control(
+    config: object,
+    job_dir: Path,
+    status: dict[str, object],
+    registration: RegisteredJob | None,
+    *,
+    pgid: int,
+    selected_signal: signal.Signals,
+    **updates: object,
+) -> bool:
+    """Reauthorize and update/signal under one publication guard section."""
+
+    with publication_control_guard(PROJECT_ROOT):
+        if registration is not None:
+            if not _registered_control_authorized_guarded(registration):
+                return False
+            return update_control(
+                job_dir,
+                pgid=pgid,
+                selected_signal=selected_signal,
+                **updates,
+            )
+        # Legacy jobs have no token that can bind a busy generation lock to
+        # their status. Hold a free lock through revalidation, control.json,
+        # and the signal so a new runner cannot publish in between.
+        with _generation_lock_observation_guarded() as (lock_available, _metadata):
+            if not lock_available or _job_dir_has_live_registry_claim(job_dir):
+                return False
+            if not _legacy_control_authorized(config, status):
+                return False
+            return update_control(
+                job_dir,
+                pgid=pgid,
+                selected_signal=selected_signal,
+                **updates,
+            )
+
+
 def control(action: str, selected_job: str = "") -> int:
     if action == "cleanup-orphans":
         return 2 if cleanup_orphans() < 0 else 0
@@ -647,49 +896,42 @@ def control(action: str, selected_job: str = "") -> int:
 
     controlled = 0
     for job_dir, status, registration in jobs:
-        authorized = (
-            _registered_control_authorized(registration)
-            if registration is not None
-            else _legacy_control_authorized(config, status)
-        )
-        if not authorized:
+        try:
+            pgid = int(status.get("pgid", 0))
+        except (TypeError, ValueError):
+            pgid = 0
+        if action == "pause":
+            selected_signal = signal.SIGSTOP
+            updates = {"paused": True}
+            message = "已发送暂停请求 / pause requested"
+        elif action == "resume":
+            selected_signal = signal.SIGCONT
+            updates = {"paused": False}
+            message = "已请求继续（仍遵循当前策略） / resume requested"
+        elif action in {"low", "auto", "max"}:
+            selected_signal = signal.SIGCONT
+            updates = {
+                "paused": False,
+                "policy": action,
+            }
+            message = f"已请求切换为 {action} 并继续 / switch requested"
+        else:
+            raise ValueError(f"Unsupported action: {action}")
+        if not _authorized_update_control(
+            config,
+            job_dir,
+            status,
+            registration,
+            pgid=pgid,
+            selected_signal=selected_signal,
+            **updates,
+        ):
             print(
                 f"{job_dir.name}: 任务身份已变化，未发送控制信号 / "
                 "job identity changed; control was not sent",
                 file=sys.stderr,
             )
             continue
-        try:
-            pgid = int(status.get("pgid", 0))
-        except (TypeError, ValueError):
-            pgid = 0
-        if action == "pause":
-            update_control(
-                job_dir,
-                pgid=pgid,
-                selected_signal=signal.SIGSTOP,
-                paused=True,
-            )
-            message = "已发送暂停请求 / pause requested"
-        elif action == "resume":
-            update_control(
-                job_dir,
-                pgid=pgid,
-                selected_signal=signal.SIGCONT,
-                paused=False,
-            )
-            message = "已请求继续（仍遵循当前策略） / resume requested"
-        elif action in {"low", "auto", "max"}:
-            update_control(
-                job_dir,
-                pgid=pgid,
-                selected_signal=signal.SIGCONT,
-                paused=False,
-                policy=action,
-            )
-            message = f"已请求切换为 {action} 并继续 / switch requested"
-        else:
-            raise ValueError(f"Unsupported action: {action}")
         print(f"{job_dir.name}: {message}")
         controlled += 1
     return 0 if controlled else 1
