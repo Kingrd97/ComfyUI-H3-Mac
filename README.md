@@ -22,11 +22,11 @@ A beginner-friendly bridge between the official [ComfyUI](https://github.com/Com
 ## Requirements
 
 - An Apple Silicon Mac. h3.c is currently optimized and tested mainly on M3 Max and M5 Max.
-- macOS, Homebrew, and Xcode Command Line Tools.
+- macOS 15 or newer, Homebrew, and Xcode or Xcode Command Line Tools that provide macOS SDK 26 or newer. The pinned h3.c revision uses runtime Metal APIs introduced in macOS 15 and SDK symbols introduced in SDK 26; the installer checks both separately and builds with an explicit 15.0 deployment target instead of inheriting the current SDK version.
 - A fast SSD with substantial free space.
-- The Ref2VA bundle is about 144 GB; at least 170 GB free is recommended.
+- FL2VA is about 134 GiB. FL2VA plus Ref2VA is about 268 GiB as a logical tree, but the pinned content-addressed downloader stores identical blobs once: about 196 GiB physically. Start with at least 220 GiB free; the downloader performs an exact revision-aware preflight before writing.
 
-A 48 GB M5 Pro should start with `auto`. With the current conservative memory rule it uses h3.c `--ssd-streaming` below 64 GiB and normally keeps H3 at Darwin background priority while the Mac is in use or on battery. A native helper watches recent input plus consecutively abnormal display-link callback gaps or callback age and triggers the fast pause path when both indicate display-service trouble. It needs neither Accessibility nor Screen Recording permission and does not capture the screen. Main-display framebuffer age is recorded for diagnosis only and never triggers Pause by itself. If the strong display-link signal is unavailable, sustained non-H3 CPU or combined WindowServer/GPU pressure provides a fallback. After 15 healthy seconds auto performs a 20-second background probe; if pressure does not return, background generation continues. After five AC-powered idle minutes, a fresh low external-CPU sample and settled WindowServer/display signals allow auto to remove the background policy.
+A 48 GB M5 Pro should start with `auto`. With the current conservative memory rule it uses h3.c `--ssd-streaming` below 64 GiB and normally keeps H3 at Darwin background priority while the Mac is in use or on battery. A native helper watches recent input plus consecutively abnormal display-link callback gaps or callback age and triggers the fast pause path when both indicate display-service trouble. It needs neither Accessibility nor Screen Recording permission and does not capture the screen. Main-display framebuffer age is recorded for diagnosis only and never triggers Pause by itself. If the strong display-link signal is unavailable, sustained non-H3 CPU or combined WindowServer/GPU pressure provides a fallback. `auto` also pauses on critical memory/swap/pageout or thermal pressure, and blocks idle-max during Low Power Mode or marginal recovery. After 15 healthy seconds auto performs a 20-second background probe; if pressure does not return, background generation continues. After five AC-powered idle minutes, a fresh low external-CPU sample and settled WindowServer/display signals allow auto to remove the background policy. These controls remain best-effort; `taskpolicy` is not a hard GPU quota.
 
 macOS does not expose a universal frame-drop counter for arbitrary foreground applications. The guardian observes display-system responsiveness rather than another app's renderer, so even its native signal and fallback metrics are best-effort rather than hard real-time. `SIGSTOP` cannot retract Metal work already submitted to the GPU and does not release loaded weights from unified memory.
 
@@ -51,6 +51,8 @@ cd ComfyUI-H3-Mac
 
 ComfyUI, h3.c, the Python virtual environment, and models live under `runtime/`, so the installation is self-contained. Validated upstream revisions are pinned in `versions.env` instead of tracking unpredictable future main branches.
 
+Model downloading uses a separate pinned Python environment, so its Hugging Face client cannot change ComfyUI's dependencies. The exposed `runtime/models/MiniMax-H3` path is a relative link into a content-addressed cache inside the same `runtime/` tree; moving the whole project preserves it. A completed manifest records every expected path, size, blob identity, and model revision. `Doctor.command` checks that manifest and then asks h3.c to inspect the model with `--info`.
+
 Configuration schema v2 has a conservative one-time upgrade path. A legacy configuration is first backed up as `config.json.v1-backup`. Only a file that still exactly matches the former shipped `background` defaults is moved to the new `adaptive` behavior; customized behavior or thresholds are preserved.
 
 `Start.command` intentionally runs the ComfyUI control plane with PyTorch on CPU. This does **not** disable Metal generation: the H3 node starts the separately compiled h3.c binary, which still performs inference with Metal. This default avoids unnecessary unified-memory use and PyTorch device-detection failures. If you also use other ComfyUI nodes that require MPS, start with `H3_COMFY_DEVICE=auto ./Start.command`.
@@ -69,6 +71,8 @@ Add and connect these nodes in ComfyUI:
 4. Chain more reference nodes as needed. Their connection order becomes Picture 1, Picture 2, and so on.
 5. Optional: add `H3 · Build Shot Prompt`, fill the storyboard fields, and connect its output to the generator's Prompt input.
 6. `H3 · Generate Video (Metal)`. Start with `quality=preview` and `resource=low` for a smoke test.
+
+The normal single-shot limit is 5 seconds on lower-memory Macs. Build longer videos as multiple reusable shots and assemble them without re-encoding. h3.c mechanically supports up to 362 frames (about 15.08 seconds), but jobs above 5 seconds are allowed only on Macs with at least 64 GiB, or with the explicit expert override `H3_ALLOW_LARGE_JOB=1`; long VAE decode has shown extreme swap growth on memory-constrained systems.
 
 After validating composition, use:
 
@@ -152,7 +156,7 @@ The pinned h3.c revision already selects its native resident INT8 MLP/QKV/attent
 - Automated backend tests, shell syntax, and GitHub Actions: verified.
 - V3 node registration against the pinned ComfyUI revision: verified.
 - Clean one-click install, h3.c Metal build, ComfyUI HTTP startup, and H3 node discovery through `/object_info`: verified.
-- End-to-end generation with the real 144 GB H3 weights: not re-verified in the current maintainer environment because the weights were intentionally not downloaded again. Reports from users with the model are welcome.
+- End-to-end generation with the real pinned H3 snapshot (about 196 GiB of unique blobs for Ref2VA): not re-verified in the current maintainer environment because the weights were intentionally not downloaded again. Reports from users with the model are welcome.
 
 ## Privacy, licenses, and limitations
 

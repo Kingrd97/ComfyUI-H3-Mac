@@ -10,9 +10,11 @@ Use `resource_profile=auto` in the H3 generation node.
 
 `low`, `max`, and manual Pause retain those exact meanings; adaptive pausing applies only to `auto`.
 
+On Macs below 64 GiB, the normal node limit is one 5-second shot. Use storyboard assembly for longer work. The h3.c hard limit remains 362 frames (about 15.08 seconds), but `H3_ALLOW_LARGE_JOB=1` is an explicit expert override because [h3.c issue #5](https://github.com/antirez/h3.c/issues/5) reports a 10-second 960×544 run on a 64 GB M4 Max growing to roughly 64 GiB of swap during VAE decode. An override is not a promise that a 48 GB machine can finish safely.
+
 ## How adaptive response protection works
 
-`Install.command` builds a small native `h3-guardian` helper. It connects to the display system without activating an app or creating a window, samples recent session input and display-link callback timing, and captures no screen content. It needs neither Accessibility nor Screen Recording permission. Main-display framebuffer age is emitted as diagnostic telemetry only; it is not a Pause trigger. If an older Xcode SDK cannot compile the helper, installation continues and `auto` uses the fallback metrics until the Command Line Tools are upgraded and installation is rerun.
+`Install.command` builds a small native `h3-guardian` helper. It runs only while the selected scheduler policy is `auto`, restarts after an unexpected exit, and stops again for `low` or `max`. It connects to the display system without activating an app or creating a window, samples recent session input and display-link callback timing, and captures no screen content. It also reports macOS thermal state and Low Power Mode. It needs neither Accessibility nor Screen Recording permission. Main-display framebuffer age is emitted as diagnostic telemetry only; it is not a Pause trigger. Sleep/wake and display-reconfiguration events clear the cadence window so they are not mistaken for foreground jank. If an older Xcode SDK cannot compile the helper, installation continues and `auto` uses the fallback metrics until the Command Line Tools are upgraded and installation is rerun.
 
 The primary signal is recent keyboard/mouse input together with display-link callback gaps or callback age that stay abnormal across consecutive native samples. That indicates the display callback service itself is not arriving on cadence, so the scheduler can pause H3 at its next 0.5-second control poll without waiting for the slower fallback timer. Framebuffer age can look stale for benign reasons and never enters this strong trigger. The helper still does not read the foreground application's own renderer or FPS.
 
@@ -23,7 +25,13 @@ If the native signal is unavailable or has not fired, the scheduler falls back t
 
 The controller checks native/user/control state every 0.5 seconds and refreshes the heavier process/GPU fallback metrics every two seconds. After the overload clears and the recovery indicators stay healthy for 15 seconds, H3 resumes at background priority for a 20-second probe. A relapse during that probe pauses it again; otherwise it returns to normal background progress. Separately, after five minutes without keyboard/mouse input and on AC power, auto waits for a fresh sample with low external CPU and settled WindowServer/display signals before removing the Darwin background policy for full-speed idle generation.
 
+Every ten seconds, `auto` also samples the public `memory_pressure`, `vm.swapusage`, and `vm_stat` diagnostics. It pauses immediately when the advisory free-memory percentage reaches 8% or lower, the thermal state becomes serious/critical, or swap/pageout growth crosses the configured rate limits. Resume still goes through the normal healthy wait and background probe; memory must recover to at least 15%. Fair thermal state, Low Power Mode, memory below the recovery threshold, battery power, or active foreground load blocks idle-max. These are conservative proxies, and Pause prevents additional pressure but cannot evict H3's existing unified-memory allocations.
+
+Darwin `taskpolicy` is also best-effort. A failed background/foreground policy change is recorded as unapplied and retried after a backoff; it is not reported as successful. It adjusts CPU/I/O scheduling priority and does not impose a hard Metal GPU quota. Live status is rewritten on a state change or every 15 seconds rather than every metrics sample.
+
 macOS does not provide a public, universal API for the actual frame-drop rate of every foreground application. The native display signal and CPU/WindowServer/GPU metrics are therefore responsiveness evidence and proxies, not proof that a particular app dropped a frame. The protection is best-effort rather than hard real-time. In particular, `SIGSTOP` cannot retract a Metal command buffer already committed to the GPU, so some GPU work may finish after the pause decision, and stopping the process does not release its loaded weights from unified memory. If the helper is missing or exits, auto fails over to the metric path rather than requiring extra permissions.
+
+The engine is wrapped with `caffeinate -s`: it prevents system idle sleep only while running on AC power. On battery, normal macOS idle-sleep policy remains effective. If ComfyUI crashes, the next `Start.command` cleans an H3 child only when both engine and controller birth fingerprints prove that the exact controller has exited; legacy or ambiguous records are left untouched. This startup recovery reduces orphan risk but is not an on-disk denoising checkpoint.
 
 ## Control a running job
 
@@ -74,6 +82,8 @@ The defaults can be changed in `config.json`:
   "auto_idle_seconds": 300,
   "auto_poll_seconds": 0.5,
   "auto_metrics_poll_seconds": 2,
+  "auto_health_poll_seconds": 10,
+  "auto_status_interval_seconds": 15,
   "auto_max_external_cpu_percent": 120,
   "auto_active_behavior": "adaptive",
   "auto_jank_interaction_seconds": 5,
@@ -85,6 +95,10 @@ The defaults can be changed in `config.json`:
   "auto_jank_window_server_recover_percent": 50,
   "auto_jank_gpu_percent": 92,
   "auto_jank_gpu_recover_percent": 70,
+  "auto_memory_pause_percent": 8,
+  "auto_memory_recover_percent": 15,
+  "auto_swap_growth_pause_mib_per_minute": 512,
+  "auto_pageout_pause_mib_per_minute": 256,
   "auto_require_ac_power": true
 }
 ```

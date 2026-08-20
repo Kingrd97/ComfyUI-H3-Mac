@@ -8,6 +8,8 @@
   "auto_idle_seconds": 300,
   "auto_poll_seconds": 0.5,
   "auto_metrics_poll_seconds": 2,
+  "auto_health_poll_seconds": 10,
+  "auto_status_interval_seconds": 15,
   "auto_max_external_cpu_percent": 120,
   "auto_active_behavior": "adaptive",
   "auto_require_ac_power": true,
@@ -20,5 +22,9 @@
   "auto_jank_window_server_recover_percent": 50,
   "auto_jank_gpu_percent": 92,
   "auto_jank_gpu_recover_percent": 70,
+  "auto_memory_pause_percent": 8,
+  "auto_memory_recover_percent": 15,
+  "auto_swap_growth_pause_mib_per_minute": 512,
+  "auto_pageout_pause_mib_per_minute": 256,
   "keep_failed_output": true
 }

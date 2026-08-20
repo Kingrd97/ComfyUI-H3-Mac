@@ -16,7 +16,9 @@ from h3_bridge.scheduler import (
     AdaptiveScheduler,
     GuardianSnapshot,
     NativeGuardian,
+    ResourceHealth,
     SystemLoad,
+    resource_health,
 )
 
 
@@ -52,6 +54,8 @@ def guardian(
     display_link_callback_age_ms: float | None = 1.0,
     frame_stalled: bool = False,
     bundle_id: str | None = "com.example.Editor",
+    thermal_state: str | None = "nominal",
+    low_power_mode_enabled: bool | None = False,
 ) -> GuardianSnapshot:
     return GuardianSnapshot(
         input_idle_seconds=idle,
@@ -62,6 +66,8 @@ def guardian(
         display_link_max_gap_ms=display_link_max_gap_ms,
         display_link_callback_age_ms=display_link_callback_age_ms,
         frame_stalled=frame_stalled,
+        thermal_state=thermal_state,
+        low_power_mode_enabled=low_power_mode_enabled,
     )
 
 
@@ -161,6 +167,67 @@ def test_native_guardian_parses_batched_ndjson(tmp_path: Path):
     assert sample.frame_stalled
 
 
+def test_native_guardian_parses_thermal_and_low_power_state(tmp_path: Path):
+    native = NativeGuardian(tmp_path / "missing")
+    sample = native._snapshot_from_payload(
+        {
+            "input_idle_seconds": 1,
+            "thermal_state": "serious",
+            "low_power_mode_enabled": True,
+        }
+    )
+
+    assert sample is not None
+    assert sample.thermal_state == "serious"
+    assert sample.low_power_mode_enabled is True
+
+
+def test_native_guardian_restarts_after_helper_exit(tmp_path: Path):
+    binary = tmp_path / "h3-guardian"
+    binary.write_text("", encoding="utf-8")
+    binary.chmod(0o755)
+    native = NativeGuardian(binary, clock=lambda: 10.0)
+    dead = MagicMock()
+    dead.poll.return_value = 1
+    replacement = MagicMock()
+    replacement.poll.return_value = None
+    replacement.stdout.fileno.return_value = 123
+    native.process = dead
+
+    with patch("h3_bridge.scheduler.platform.system", return_value="Darwin"), patch(
+        "h3_bridge.scheduler.subprocess.Popen", return_value=replacement
+    ) as launch, patch("h3_bridge.scheduler.os.set_blocking"):
+        assert native.poll() is None
+
+    launch.assert_called_once()
+    assert native.process is replacement
+
+
+def test_resource_health_parses_partial_public_tool_output():
+    outputs = {
+        "/usr/bin/memory_pressure": (
+            "The system has 1 pages.\nSystem-wide memory free percentage: 7%\n"
+        ),
+        "/usr/sbin/sysctl": "total = 2048.00M  used = 1536.50M  free = 511.50M\n",
+        "/usr/bin/vm_stat": (
+            "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+            "Pageouts: 1024.\n"
+        ),
+    }
+
+    def run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0, outputs[command[0]], "")
+
+    with patch("h3_bridge.scheduler.platform.system", return_value="Darwin"), patch(
+        "h3_bridge.scheduler.subprocess.run", side_effect=run
+    ):
+        health = resource_health()
+
+    assert health.memory_free_percent == 7.0
+    assert health.swap_used_bytes == int(1536.5 * 1024 * 1024)
+    assert health.pageout_bytes == 1024 * 16384
+
+
 def adaptive_scheduler(
     tmp_path: Path,
     now: list[float],
@@ -178,6 +245,11 @@ def adaptive_scheduler(
         load_probe=lambda _pgid: load[0],
         gpu_probe=lambda: gpu[0],
         power_probe=lambda: True,
+        health_probe=lambda: ResourceHealth(
+            memory_free_percent=50.0,
+            swap_used_bytes=0,
+            pageout_bytes=0,
+        ),
         jank_probe=lambda: native[0],
     )
 
@@ -274,9 +346,14 @@ def test_manual_pause_overrides_max_and_can_resume(tmp_path: Path):
 
 
 def test_process_birth_fingerprint_retries_after_transient_ps_failure(tmp_path: Path):
+    engine_signatures = iter(["", "birth-fingerprint"])
+
+    def signature(pid: int) -> str:
+        return next(engine_signatures) if pid == 4242 else "controller-birth"
+
     with patch(
         "h3_bridge.scheduler.process_start_signature",
-        side_effect=["", "birth-fingerprint"],
+        side_effect=signature,
     ), patch("h3_bridge.scheduler.signal_process_group"), patch(
         "h3_bridge.scheduler.set_process_group_background"
     ):
@@ -830,6 +907,177 @@ def test_legacy_auto_behaviors_ignore_adaptive_guardian_state(
     assert decision.paused is expected_paused
     assert decision.adaptive_phase == expected_phase
     assert signals == ([signal.SIGSTOP] if expected_paused else [])
+
+
+def test_memory_pressure_pauses_immediately_then_recovers_through_probe(
+    tmp_path: Path,
+):
+    now = [0.0]
+    health = [ResourceHealth(memory_free_percent=7.0, swap_used_bytes=0, pageout_bytes=0)]
+    signals: list[signal.Signals] = []
+    scheduler = AdaptiveScheduler(
+        tmp_path,
+        4242,
+        "auto",
+        config(tmp_path),
+        clock=lambda: now[0],
+        load_probe=lambda _pgid: SystemLoad(0.0, 0.0),
+        gpu_probe=lambda: 0.0,
+        power_probe=lambda: True,
+        health_probe=lambda: health[0],
+        jank_probe=lambda: guardian(),
+        controller_pid=999,
+        controller_start_signature="controller-birth",
+    )
+    with patch(
+        "h3_bridge.scheduler.signal_process_group",
+        side_effect=lambda _pgid, selected: signals.append(selected) or True,
+    ), patch("h3_bridge.scheduler.set_process_group_background", return_value=True):
+        scheduler.start()
+        assert scheduler.tick().reason == "memory-pressure"
+        health[0] = ResourceHealth(
+            memory_free_percent=25.0, swap_used_bytes=0, pageout_bytes=0
+        )
+        now[0] = 10.0
+        assert scheduler.tick(force=True).adaptive_phase == "paused"
+        now[0] = 25.0
+        probe = scheduler.tick(force=True)
+
+    assert probe.adaptive_phase == "probe"
+    assert signals == [signal.SIGSTOP, signal.SIGCONT]
+
+
+def test_thermal_pressure_uses_guardian_fast_pause_path(tmp_path: Path):
+    health_probe = MagicMock()
+    scheduler = AdaptiveScheduler(
+        tmp_path,
+        4242,
+        "auto",
+        config(tmp_path),
+        load_probe=MagicMock(),
+        gpu_probe=MagicMock(),
+        power_probe=MagicMock(),
+        health_probe=health_probe,
+        jank_probe=lambda: guardian(thermal_state="critical"),
+        controller_pid=999,
+        controller_start_signature="controller-birth",
+    )
+    with patch("h3_bridge.scheduler.signal_process_group", return_value=True), patch(
+        "h3_bridge.scheduler.set_process_group_background", return_value=True
+    ):
+        scheduler.start()
+
+    assert scheduler.tick().paused
+    assert scheduler.tick().reason == "thermal-pressure"
+    health_probe.assert_not_called()
+
+
+def test_swap_growth_rate_pauses_auto(tmp_path: Path):
+    now = [0.0]
+    health = [ResourceHealth(50.0, 0, 0)]
+    scheduler = AdaptiveScheduler(
+        tmp_path,
+        4242,
+        "auto",
+        config(tmp_path),
+        clock=lambda: now[0],
+        load_probe=lambda _pgid: SystemLoad(),
+        gpu_probe=lambda: 0.0,
+        power_probe=lambda: True,
+        health_probe=lambda: health[0],
+        jank_probe=lambda: guardian(),
+        controller_pid=999,
+        controller_start_signature="controller-birth",
+    )
+    with patch("h3_bridge.scheduler.signal_process_group", return_value=True), patch(
+        "h3_bridge.scheduler.set_process_group_background", return_value=True
+    ):
+        scheduler.start()
+        health[0] = ResourceHealth(50.0, 512 * 1024 * 1024, 0)
+        now[0] = 10.0
+        decision = scheduler.tick(force=True)
+
+    assert decision.paused
+    assert decision.reason == "swap-thrashing"
+
+
+def test_taskpolicy_failure_is_retried_without_claiming_success(tmp_path: Path):
+    now = [0.0]
+    scheduler = AdaptiveScheduler(
+        tmp_path,
+        4242,
+        "low",
+        config(tmp_path),
+        clock=lambda: now[0],
+        controller_pid=999,
+        controller_start_signature="controller-birth",
+    )
+    with patch("h3_bridge.scheduler.signal_process_group", return_value=True), patch(
+        "h3_bridge.scheduler.set_process_group_background",
+        side_effect=[False, True],
+    ) as apply_policy:
+        scheduler.start()
+        now[0] = 1.0
+        scheduler.tick(force=True)
+        now[0] = 5.0
+        scheduler.tick(force=True)
+
+    assert apply_policy.call_count == 2
+    status = json.loads((tmp_path / "process.json").read_text(encoding="utf-8"))
+    assert status["background_policy_applied"] is True
+
+
+def test_health_and_status_sampling_use_slow_independent_cadences(tmp_path: Path):
+    now = [0.0]
+    health_probe = MagicMock(return_value=ResourceHealth(50.0, 0, 0))
+    scheduler = AdaptiveScheduler(
+        tmp_path,
+        4242,
+        "auto",
+        config(tmp_path),
+        clock=lambda: now[0],
+        load_probe=lambda _pgid: SystemLoad(),
+        gpu_probe=lambda: 0.0,
+        power_probe=lambda: True,
+        health_probe=health_probe,
+        jank_probe=lambda: guardian(),
+        controller_pid=999,
+        controller_start_signature="controller-birth",
+    )
+    with patch("h3_bridge.scheduler.signal_process_group", return_value=True), patch(
+        "h3_bridge.scheduler.set_process_group_background", return_value=True
+    ):
+        scheduler.start()
+        scheduler._write_status = status_writer = MagicMock()
+        now[0] = 2.0
+        scheduler.tick()
+        now[0] = 10.0
+        scheduler.tick()
+        now[0] = 15.0
+        scheduler.tick()
+
+    assert health_probe.call_count == 2
+    status_writer.assert_called_once()
+
+
+def test_native_guardian_is_not_run_for_low_or_max_policy(tmp_path: Path):
+    with patch.object(NativeGuardian, "poll") as poll, patch.object(
+        NativeGuardian, "close"
+    ) as close, patch("h3_bridge.scheduler.signal_process_group"), patch(
+        "h3_bridge.scheduler.set_process_group_background", return_value=True
+    ):
+        low = AdaptiveScheduler(
+            tmp_path,
+            4242,
+            "low",
+            config(tmp_path),
+            controller_pid=999,
+            controller_start_signature="controller-birth",
+        )
+        low.start()
+
+    poll.assert_not_called()
+    close.assert_called()
 
 
 def test_real_process_group_can_pause_and_continue(tmp_path: Path):

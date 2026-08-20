@@ -20,13 +20,30 @@ from .models import ResourceProfile
 
 _IDLE_RE = re.compile(r'"HIDIdleTime"\s*=\s*(\d+)')
 _GPU_RE = re.compile(r'"Device Utilization %"\s*=\s*(\d+(?:\.\d+)?)')
+_MEMORY_FREE_RE = re.compile(
+    r"System-wide memory free percentage:\s*(\d+(?:\.\d+)?)%"
+)
+_SWAP_USED_RE = re.compile(r"\bused\s*=\s*(\d+(?:\.\d+)?)([KMG])", re.I)
+_VM_PAGE_SIZE_RE = re.compile(r"page size of\s+(\d+) bytes", re.I)
+_VM_PAGEOUT_RE = re.compile(r"^Pageouts:\s*(\d+)\.?$", re.M)
 _VALID_POLICIES = {"low", "auto", "max"}
+_THERMAL_STATES = {"nominal", "fair", "serious", "critical"}
+_MIB = 1024 * 1024
 
 
 @dataclass(frozen=True)
 class SystemLoad:
     external_cpu_percent: float = 0.0
     window_server_cpu_percent: float = 0.0
+
+
+@dataclass(frozen=True)
+class ResourceHealth:
+    """Low-frequency, best-effort pressure telemetry from public macOS tools."""
+
+    memory_free_percent: float | None = None
+    swap_used_bytes: int | None = None
+    pageout_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -39,6 +56,8 @@ class GuardianSnapshot:
     display_link_max_gap_ms: float | None = None
     display_link_callback_age_ms: float | None = None
     frame_stalled: bool = False
+    thermal_state: str | None = None
+    low_power_mode_enabled: bool | None = None
 
 
 def _optional_float(value: object) -> float | None:
@@ -65,6 +84,8 @@ class NativeGuardian:
         self.process: subprocess.Popen[bytes] | None = None
         self._buffer = b""
         self._frame_stall_samples = 0
+        self._last_start_attempt = float("-inf")
+        self._restart_seconds = 2.0
 
     def _snapshot_from_payload(
         self, value: object
@@ -102,6 +123,11 @@ class NativeGuardian:
         )
         self._frame_stall_samples = self._frame_stall_samples + 1 if raw_stall else 0
         bundle = value.get("frontmost_bundle_id")
+        thermal = value.get("thermal_state")
+        thermal_state = (
+            thermal if isinstance(thermal, str) and thermal in _THERMAL_STATES else None
+        )
+        low_power = value.get("low_power_mode_enabled")
         return GuardianSnapshot(
             input_idle_seconds=max(0.0, input_idle),
             frame_age_ms=_optional_float(value.get("frame_age_ms")),
@@ -111,15 +137,23 @@ class NativeGuardian:
             display_link_max_gap_ms=maximum_gap,
             display_link_callback_age_ms=callback_age,
             frame_stalled=self._frame_stall_samples >= 2,
+            thermal_state=thermal_state,
+            low_power_mode_enabled=(low_power if isinstance(low_power, bool) else None),
         )
 
-    def start(self) -> None:
+    def start(self) -> bool:
+        if self.process is not None and self.process.poll() is None:
+            return True
+        now = self.clock()
+        if now - self._last_start_attempt < self._restart_seconds:
+            return False
+        self._last_start_attempt = now
         if (
             platform.system() != "Darwin"
             or not self.binary.is_file()
             or not os.access(self.binary, os.X_OK)
         ):
-            return
+            return False
         try:
             self.process = subprocess.Popen(
                 [str(self.binary)],
@@ -129,16 +163,27 @@ class NativeGuardian:
             )
         except OSError:
             self.process = None
-            return
+            return False
         assert self.process.stdout is not None
         os.set_blocking(self.process.stdout.fileno(), False)
+        self._buffer = b""
+        self._frame_stall_samples = 0
+        return True
 
     def poll(self) -> GuardianSnapshot | None:
+        if self.process is None:
+            self.start()
         if self.process is None or self.process.stdout is None:
             self._frame_stall_samples = 0
             return None
         if self.process.poll() is not None:
+            process = self.process
+            self.process = None
+            if process.stdout is not None:
+                process.stdout.close()
+            self._buffer = b""
             self._frame_stall_samples = 0
+            self.start()
             return None
 
         saw_stall = False
@@ -180,6 +225,8 @@ class NativeGuardian:
                         newest.display_link_callback_age_ms
                     ),
                     frame_stalled=True,
+                    thermal_state=newest.thermal_state,
+                    low_power_mode_enabled=newest.low_power_mode_enabled,
                 )
             return newest
         # Never reuse input/display telemetry after a silent helper poll. Doing
@@ -201,6 +248,9 @@ class NativeGuardian:
                 process.wait(timeout=1)
         if process.stdout is not None:
             process.stdout.close()
+        self._buffer = b""
+        self._frame_stall_samples = 0
+        self._last_start_attempt = float("-inf")
 
 
 def _atomic_json(path: Path, payload: dict[str, object]) -> None:
@@ -240,6 +290,7 @@ def process_start_signature(pid: int) -> str:
             capture_output=True,
             text=True,
             timeout=2,
+            env={**os.environ, "LC_ALL": "C", "LANG": "C"},
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -302,13 +353,14 @@ def process_group_pids(pgid: int) -> list[int]:
     return selected or [pgid]
 
 
-def set_process_group_background(pgid: int, background: bool) -> None:
+def set_process_group_background(pgid: int, background: bool) -> bool:
     if platform.system() != "Darwin":
-        return
+        return True
     option = "-b" if background else "-B"
+    applied = True
     for pid in process_group_pids(pgid):
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["/usr/sbin/taskpolicy", option, "-p", str(pid)],
                 check=False,
                 stdout=subprocess.DEVNULL,
@@ -316,7 +368,11 @@ def set_process_group_background(pgid: int, background: bool) -> None:
                 timeout=3,
             )
         except (OSError, subprocess.TimeoutExpired):
+            applied = False
             continue
+        if result.returncode != 0:
+            applied = False
+    return applied
 
 
 def hid_idle_seconds() -> float:
@@ -432,6 +488,55 @@ def on_ac_power() -> bool:
     return "AC Power" in result.stdout
 
 
+def resource_health() -> ResourceHealth:
+    """Sample advisory memory pressure using standard macOS command-line tools."""
+
+    if platform.system() != "Darwin":
+        return ResourceHealth()
+
+    def output(command: list[str]) -> str:
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return result.stdout if result.returncode == 0 else ""
+
+    commands = (
+        ["/usr/bin/memory_pressure", "-Q"],
+        ["/usr/sbin/sysctl", "-n", "vm.swapusage"],
+        ["/usr/bin/vm_stat"],
+    )
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="h3-health") as pool:
+        pressure_output, swap_output, vm_output = pool.map(output, commands)
+    memory_match = _MEMORY_FREE_RE.search(pressure_output)
+    memory_free_percent = (
+        float(memory_match.group(1)) if memory_match is not None else None
+    )
+
+    swap_match = _SWAP_USED_RE.search(swap_output)
+    swap_used_bytes: int | None = None
+    if swap_match is not None:
+        multiplier = {"K": 1024, "M": _MIB, "G": 1024 * _MIB}[
+            swap_match.group(2).upper()
+        ]
+        swap_used_bytes = int(float(swap_match.group(1)) * multiplier)
+
+    page_size_match = _VM_PAGE_SIZE_RE.search(vm_output)
+    pageout_match = _VM_PAGEOUT_RE.search(vm_output)
+    pageout_bytes = (
+        int(page_size_match.group(1)) * int(pageout_match.group(1))
+        if page_size_match is not None and pageout_match is not None
+        else None
+    )
+    return ResourceHealth(memory_free_percent, swap_used_bytes, pageout_bytes)
+
+
 @dataclass(frozen=True)
 class SchedulerDecision:
     paused: bool
@@ -467,7 +572,10 @@ class AdaptiveScheduler:
         load_probe: Callable[[int], SystemLoad] = system_load,
         gpu_probe: Callable[[], float | None] = gpu_utilization_percent,
         power_probe: Callable[[], bool] = on_ac_power,
+        health_probe: Callable[[], ResourceHealth] = resource_health,
         jank_probe: Callable[[], GuardianSnapshot | None] | None = None,
+        controller_pid: int | None = None,
+        controller_start_signature: str | None = None,
     ):
         self.job_dir = job_dir
         self.pgid = pgid
@@ -483,6 +591,7 @@ class AdaptiveScheduler:
             )
         self.gpu_probe = gpu_probe
         self.power_probe = power_probe
+        self.health_probe = health_probe
         self._guardian: NativeGuardian | None = None
         if jank_probe is None:
             self._guardian = NativeGuardian(
@@ -503,11 +612,16 @@ class AdaptiveScheduler:
         self._last_status_write = float("-inf")
         self._last_status_signature: tuple[object, ...] | None = None
         self._last_metrics_check = float("-inf")
+        self._last_health_check = float("-inf")
         self._last_idle_check = float("-inf")
         self._cached_idle = 0.0
         self._cached_load = SystemLoad()
         self._cached_gpu: float | None = None
         self._cached_ac_power = True
+        self._cached_health = ResourceHealth()
+        self._health_sample_at: float | None = None
+        self._swap_growth_mib_per_minute: float | None = None
+        self._pageout_mib_per_minute: float | None = None
         self._auto_phase = "background"
         self._pressure_since: float | None = None
         self._healthy_since: float | None = None
@@ -519,10 +633,15 @@ class AdaptiveScheduler:
         self._control_reconcile = False
         self._process_start_signature = process_start_signature(pgid)
         self._process_signature_attempts = 1
+        self._controller_pid = controller_pid or os.getpid()
+        self._controller_start_signature = (
+            controller_start_signature
+            if controller_start_signature is not None
+            else process_start_signature(self._controller_pid)
+        )
+        self._background_retry_at = float("-inf")
 
     def start(self) -> None:
-        if self._guardian is not None:
-            self._guardian.start()
         _atomic_json(
             self.control_path,
             {
@@ -605,6 +724,83 @@ class AdaptiveScheduler:
                 self._cached_gpu = gpu_future.result()
                 self._cached_ac_power = power_future.result()
         return self._cached_load, self._cached_gpu, self._cached_ac_power
+
+    def _sample_health(self, now: float, force: bool) -> ResourceHealth:
+        if force or now - self._last_health_check >= self.config.auto_health_poll_seconds:
+            previous = self._cached_health
+            previous_at = self._health_sample_at
+            current = self.health_probe()
+            self._last_health_check = now
+            self._cached_health = current
+            self._health_sample_at = now
+            self._swap_growth_mib_per_minute = self._growth_rate(
+                previous.swap_used_bytes, current.swap_used_bytes, previous_at, now
+            )
+            self._pageout_mib_per_minute = self._growth_rate(
+                previous.pageout_bytes, current.pageout_bytes, previous_at, now
+            )
+        return self._cached_health
+
+    @staticmethod
+    def _growth_rate(
+        previous: int | None,
+        current: int | None,
+        previous_at: float | None,
+        now: float,
+    ) -> float | None:
+        if (
+            previous is None
+            or current is None
+            or previous_at is None
+            or now <= previous_at
+        ):
+            return None
+        if current <= previous:
+            return 0.0
+        return (current - previous) / _MIB * 60.0 / (now - previous_at)
+
+    def _resource_pressure_reason(
+        self, guardian: GuardianSnapshot | None
+    ) -> str | None:
+        thermal = guardian.thermal_state if guardian is not None else None
+        if thermal in {"serious", "critical"}:
+            return "thermal-pressure"
+        memory = self._cached_health.memory_free_percent
+        if memory is not None and memory <= self.config.auto_memory_pause_percent:
+            return "memory-pressure"
+        if (
+            self._swap_growth_mib_per_minute is not None
+            and self._swap_growth_mib_per_minute
+            >= self.config.auto_swap_growth_pause_mib_per_minute
+        ):
+            return "swap-thrashing"
+        if (
+            self._pageout_mib_per_minute is not None
+            and self._pageout_mib_per_minute
+            >= self.config.auto_pageout_pause_mib_per_minute
+        ):
+            return "pageout-thrashing"
+        return None
+
+    def _resources_recovered(self, guardian: GuardianSnapshot | None) -> bool:
+        thermal = guardian.thermal_state if guardian is not None else None
+        if thermal in {"serious", "critical"}:
+            return False
+        memory = self._cached_health.memory_free_percent
+        if memory is not None and memory < self.config.auto_memory_recover_percent:
+            return False
+        return (
+            (
+                self._swap_growth_mib_per_minute is None
+                or self._swap_growth_mib_per_minute
+                < self.config.auto_swap_growth_pause_mib_per_minute
+            )
+            and (
+                self._pageout_mib_per_minute is None
+                or self._pageout_mib_per_minute
+                < self.config.auto_pageout_pause_mib_per_minute
+            )
+        )
 
     def _sample_fallback_idle(self, now: float, force: bool) -> float:
         if force or now - self._last_idle_check >= self.config.auto_metrics_poll_seconds:
@@ -717,6 +913,12 @@ class AdaptiveScheduler:
         idle_boost = (
             idle >= self.config.auto_idle_seconds
             and (not self.config.auto_require_ac_power or ac_power)
+            and not bool(guardian and guardian.low_power_mode_enabled)
+            and not bool(
+                guardian
+                and guardian.thermal_state in {"fair", "serious", "critical"}
+            )
+            and self._resources_recovered(guardian)
             and load.external_cpu_percent < self.config.auto_max_external_cpu_percent
             and load.window_server_cpu_percent
             <= self.config.auto_jank_window_server_recover_percent
@@ -767,16 +969,20 @@ class AdaptiveScheduler:
             or (display_link_stalled and (window_server_high or gpu_high))
         )
         frame_stalled = guardian is not None and guardian.frame_stalled
-        severe = frame_stalled or cpu_severe or display_contention
+        resource_reason = self._resource_pressure_reason(guardian)
+        severe = bool(resource_reason) or frame_stalled or cpu_severe or display_contention
         severe_reason = (
-            "frame-stall"
+            resource_reason
+            if resource_reason is not None
+            else "frame-stall"
             if frame_stalled
             else "external-cpu-jank"
             if cpu_severe
             else "display-contention"
         )
         healthy = (
-            not frame_stalled
+            self._resources_recovered(guardian)
+            and not frame_stalled
             and not display_link_stalled
             and load.external_cpu_percent
             <= self.config.auto_max_external_cpu_percent
@@ -877,7 +1083,7 @@ class AdaptiveScheduler:
         if severe:
             if self._pressure_since is None:
                 self._pressure_since = now
-            if frame_stalled or (
+            if resource_reason is not None or frame_stalled or (
                 now - self._pressure_since
                 >= max(
                     self.config.auto_jank_pause_seconds,
@@ -926,6 +1132,9 @@ class AdaptiveScheduler:
             self._reset_adaptive()
         self._last_policy = policy
         self._last_manual_pause = manual_pause
+
+        if self._guardian is not None and policy != "auto":
+            self._guardian.close()
 
         if manual_pause:
             previous_guardian = (
@@ -978,7 +1187,10 @@ class AdaptiveScheduler:
         if (
             self.config.auto_active_behavior == "adaptive"
             and guardian is not None
-            and guardian.frame_stalled
+            and (
+                guardian.frame_stalled
+                or guardian.thermal_state in {"serious", "critical"}
+            )
         ):
             # The permission-free native cadence signal is deliberately the
             # fast path. Do not wait behind slower ps/ioreg/pmset fallbacks.
@@ -996,6 +1208,7 @@ class AdaptiveScheduler:
             return self._legacy_auto_decision(
                 policy, idle, load, gpu, ac_power, guardian
             )
+        self._sample_health(now, force_metrics)
         return self._adaptive_auto_decision(
             now, policy, idle, load, gpu, ac_power, guardian
         )
@@ -1010,11 +1223,16 @@ class AdaptiveScheduler:
                 "pid": self.pgid,
                 "pgid": self.pgid,
                 "process_start_signature": self._process_start_signature,
+                "controller_pid": self._controller_pid,
+                "controller_start_signature": self._controller_start_signature,
                 "state": state,
                 "engine_profile": self.engine_profile,
                 "scheduler_policy": decision.policy,
                 "paused": decision.paused,
                 "background": decision.background,
+                "background_policy_applied": (
+                    self._background == decision.background
+                ),
                 "reason": decision.reason,
                 "adaptive_phase": decision.adaptive_phase,
                 "idle_seconds": round(decision.idle_seconds, 1),
@@ -1028,6 +1246,26 @@ class AdaptiveScheduler:
                     else None
                 ),
                 "ac_power": decision.ac_power,
+                "memory_free_percent": (
+                    round(self._cached_health.memory_free_percent, 1)
+                    if self._cached_health.memory_free_percent is not None
+                    else None
+                ),
+                "swap_used_mib": (
+                    round(self._cached_health.swap_used_bytes / _MIB, 1)
+                    if self._cached_health.swap_used_bytes is not None
+                    else None
+                ),
+                "swap_growth_mib_per_minute": (
+                    round(self._swap_growth_mib_per_minute, 1)
+                    if self._swap_growth_mib_per_minute is not None
+                    else None
+                ),
+                "pageout_growth_mib_per_minute": (
+                    round(self._pageout_mib_per_minute, 1)
+                    if self._pageout_mib_per_minute is not None
+                    else None
+                ),
                 "guardian_available": decision.guardian is not None,
                 "frame_stalled": bool(
                     decision.guardian and decision.guardian.frame_stalled
@@ -1061,6 +1299,16 @@ class AdaptiveScheduler:
                     if decision.guardian is not None
                     else None
                 ),
+                "thermal_state": (
+                    decision.guardian.thermal_state
+                    if decision.guardian is not None
+                    else None
+                ),
+                "low_power_mode_enabled": (
+                    decision.guardian.low_power_mode_enabled
+                    if decision.guardian is not None
+                    else None
+                ),
                 "error": error,
                 "updated_at": time.time(),
             },
@@ -1079,11 +1327,23 @@ class AdaptiveScheduler:
             self._last_check = float("-inf")
             return self._last_decision or decision
 
-        if not decision.paused and self._background != decision.background:
-            set_process_group_background(self.pgid, decision.background)
-            self._background = decision.background
+        if (
+            not decision.paused
+            and self._background != decision.background
+            and now >= self._background_retry_at
+        ):
+            applied = set_process_group_background(self.pgid, decision.background)
+            if applied is not False:
+                self._background = decision.background
+                self._background_retry_at = float("-inf")
+            else:
+                # Do not record the desired policy as applied. A transient
+                # taskpolicy failure is retried without hammering launchd.
+                self._background_retry_at = now + max(
+                    5.0, self.config.auto_metrics_poll_seconds
+                )
 
-        if manual_pause:
+        if manual_pause and policy == "auto":
             # Keep the native helper pipe drained without running ps/ioreg/
             # pmset.  Manual pause itself was handled before every heavy probe.
             self.jank_probe()
@@ -1095,12 +1355,13 @@ class AdaptiveScheduler:
             decision.policy,
             decision.paused,
             decision.background,
+            self._background == decision.background,
             decision.reason,
             decision.adaptive_phase,
         )
         if (
             status_signature != self._last_status_signature
-            or now - self._last_status_write >= self.config.auto_metrics_poll_seconds
+            or now - self._last_status_write >= self.config.auto_status_interval_seconds
         ):
             self._write_status(state, decision)
             self._last_status_signature = status_signature

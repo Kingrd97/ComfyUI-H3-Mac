@@ -19,9 +19,11 @@ def test_resource_profiles_on_macos():
 
 
 def test_auto_streaming_uses_ram_threshold():
-    with patch("h3_bridge.profiles.physical_ram_gib", return_value=32):
+    with patch("h3_bridge.profiles.physical_ram_gib", return_value=0):
         assert should_stream("auto", 64)
-    with patch("h3_bridge.profiles.physical_ram_gib", return_value=96):
+    with patch("h3_bridge.profiles.physical_ram_gib", return_value=48):
+        assert should_stream("auto", 64)
+    with patch("h3_bridge.profiles.physical_ram_gib", return_value=64):
         assert not should_stream("auto", 64)
     assert should_stream("low", 64)
     assert not should_stream("max", 64)

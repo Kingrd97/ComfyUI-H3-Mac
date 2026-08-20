@@ -16,8 +16,9 @@ printf '%s\n' \
   '3) 继续全部 / Resume all' \
   '4) 自动模式并继续 / Auto + resume' \
   '5) 低功耗模式并继续 / Low + resume' \
-  '6) 满功耗模式并继续 / Max + resume'
-read -r -p '请选择 / Choose [1-6]: ' CHOICE
+  '6) 满功耗模式并继续 / Max + resume' \
+  '7) 清理已确认的孤儿进程 / Clean verified orphans'
+read -r -p '请选择 / Choose [1-7]: ' CHOICE
 
 case "$CHOICE" in
   1) ACTION=status ;;
@@ -26,6 +27,7 @@ case "$CHOICE" in
   4) ACTION=auto ;;
   5) ACTION=low ;;
   6) ACTION=max ;;
+  7) ACTION=cleanup-orphans ;;
   *) printf '无效选择 / Invalid choice.\n' >&2; exit 2 ;;
 esac
 

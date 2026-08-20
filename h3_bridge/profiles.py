@@ -38,7 +38,9 @@ def should_stream(profile: ResourceProfile, threshold_gib: int) -> bool:
     if profile == "max":
         return False
     ram = physical_ram_gib()
-    return bool(ram and ram < threshold_gib)
+    # Failure to read RAM must choose the memory-safe path. Resident H3 is an
+    # explicit max-mode decision, never an accidental result of failed probing.
+    return ram <= 0 or ram < threshold_gib
 
 
 def process_prefix(profile: ResourceProfile) -> list[str]:

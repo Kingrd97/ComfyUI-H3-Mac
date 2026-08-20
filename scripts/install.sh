@@ -6,6 +6,7 @@ RUNTIME="$PROJECT_ROOT/runtime"
 COMFY="$RUNTIME/ComfyUI"
 H3_SRC="$RUNTIME/h3.c"
 VENV="$RUNTIME/.venv"
+MODEL_VENV="$RUNTIME/model-tools-venv"
 BIN="$RUNTIME/bin"
 source "$PROJECT_ROOT/versions.env"
 
@@ -15,8 +16,15 @@ die() { printf '\n\033[1;31m错误：\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ "$(uname -s)" == "Darwin" ]] || die "本项目只支持 macOS。"
 [[ "$(uname -m)" == "arm64" ]] || die "h3.c 需要 Apple Silicon（M 系列芯片）。"
+macos_major="$(sw_vers -productVersion | cut -d. -f1)"
+[[ "$macos_major" =~ ^[0-9]+$ && "$macos_major" -ge 15 ]] || \
+  die "锁定版 h3.c 使用 macOS 15 引入的 Metal API，需要 macOS 15 或更高版本。"
 command -v xcode-select >/dev/null || die "找不到 xcode-select。"
 xcode-select -p >/dev/null 2>&1 || die "请先执行 xcode-select --install，安装完成后再运行本脚本。"
+sdk_version="$(xcrun --sdk macosx --show-sdk-version 2>/dev/null || true)"
+sdk_major="${sdk_version%%.*}"
+[[ "$sdk_major" =~ ^[0-9]+$ && "$sdk_major" -ge 26 ]] || \
+  die "锁定版 h3.c 编译需要 macOS SDK 26 或更高版本（当前：${sdk_version:-无法读取}）。请升级 Xcode 或 Xcode Command Line Tools。"
 command -v brew >/dev/null || die "请先从 https://brew.sh 安装 Homebrew。"
 
 info "安装系统依赖（FFmpeg、Python、Git）"
@@ -44,12 +52,16 @@ git -C "$H3_SRC" checkout --detach "$H3_REF"
 git -C "$H3_SRC" submodule update --init --recursive
 
 info "编译 h3.c（Apple Metal）"
-make -C "$H3_SRC" -j"$(sysctl -n hw.logicalcpu)"
+make -C "$H3_SRC" clean
+MACOSX_DEPLOYMENT_TARGET=15.0 make -C "$H3_SRC" -j"$(sysctl -n hw.logicalcpu)"
 
 info "编译前台卡顿保护器（无界面、无需额外权限）"
+SWIFT_MODULE_CACHE="$RUNTIME/swift-module-cache"
+mkdir -p "$SWIFT_MODULE_CACHE"
 if ! xcrun swiftc \
     -O \
     -target arm64-apple-macos12.0 \
+    -module-cache-path "$SWIFT_MODULE_CACHE" \
     -framework AppKit \
     -framework CoreGraphics \
     -framework CoreVideo \
@@ -61,10 +73,14 @@ if ! xcrun swiftc \
 fi
 
 info "建立隔离的 Python 环境"
-"$(brew --prefix python@3.12)/bin/python3.12" -m venv "$VENV"
+"$(brew --prefix python@3.12)/bin/python3.12" -m venv --clear "$VENV"
 "$VENV/bin/python" -m pip install --upgrade pip wheel
 "$VENV/bin/python" -m pip install -r "$COMFY/requirements.txt"
 "$VENV/bin/python" -m pip install -r "$PROJECT_ROOT/requirements.txt"
+
+info "建立隔离的模型下载工具环境"
+"$(brew --prefix python@3.12)/bin/python3.12" -m venv --clear "$MODEL_VENV"
+"$MODEL_VENV/bin/python" -m pip install "huggingface_hub==$HUGGINGFACE_HUB_VERSION"
 
 info "接入 ComfyUI 自定义节点"
 mkdir -p "$COMFY/custom_nodes"

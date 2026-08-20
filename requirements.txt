@@ -1,2 +1,3 @@
 # The node uses packages already provided by ComfyUI.
-# Keep this file so ComfyUI-Manager can install the project consistently.
+# Model-download tooling has a separate runtime/model-tools-venv so it cannot
+# change ComfyUI's transitive Python dependencies.

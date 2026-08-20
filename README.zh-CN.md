@@ -22,11 +22,11 @@
 ## 要求
 
 - Apple Silicon Mac（h3.c 当前主要在 M3 Max / M5 Max 上优化和验证）
-- macOS、Homebrew、Xcode Command Line Tools
+- macOS 15 或更高版本、Homebrew，以及提供 macOS SDK 26 或更高版本的 Xcode / Xcode Command Line Tools。锁定版 h3.c 使用 macOS 15 引入的运行时 Metal API 和 SDK 26 引入的编译期符号；安装器会分别预检两者，并显式设置 15.0 部署目标，不再错误继承当前 SDK 版本。
 - 足够快的 SSD 和大量可用磁盘
-- Ref2VA 套件约 144 GB，建议至少预留 170 GB
+- FL2VA 约 134 GiB；FL2VA 与 Ref2VA 两棵目录的逻辑总量约 268 GiB。锁定版本的内容寻址下载器会让相同 blob 只存一份，实际约 196 GiB，建议开始前至少留出 220 GiB；写入前会按精确版本检查空间。
 
-48GB M5 Pro 默认推荐 `auto`。当前保守内存规则会在物理内存低于 64 GiB 时使用 h3.c 的 `--ssd-streaming`，人在使用电脑或电池供电时通常保持 macOS 后台优先级慢跑。原生 helper 会把“最近有键鼠输入 + display-link 回调间隔或回调 age 连续异常”作为强响应信号，两者同时出现时走快速暂停路径；它不需要“辅助功能”或“屏幕录制”权限，也不捕获屏幕内容。主显示器 framebuffer age 只写入诊断信息，绝不会单独触发暂停。如果 display-link 强信号不可用，还会用持续的非 H3 CPU 或 WindowServer/GPU 组合压力回退判断。健康稳定 15 秒后先后台试跑 20 秒，没有复发再继续后台生成。接电、空闲 5 分钟，且最新采样中的其他 CPU、WindowServer 与显示信号都已平稳时，才解除后台策略。
+48GB M5 Pro 默认推荐 `auto`。当前保守内存规则会在物理内存低于 64 GiB 时使用 h3.c 的 `--ssd-streaming`，人在使用电脑或电池供电时通常保持 macOS 后台优先级慢跑。原生 helper 会把“最近有键鼠输入 + display-link 回调间隔或回调 age 连续异常”作为强响应信号，两者同时出现时走快速暂停路径；它不需要“辅助功能”或“屏幕录制”权限，也不捕获屏幕内容。主显示器 framebuffer age 只写入诊断信息，绝不会单独触发暂停。如果 display-link 强信号不可用，还会用持续的非 H3 CPU 或 WindowServer/GPU 组合压力回退判断。`auto` 还会在严重内存、swap/pageout 或温度压力下暂停，并在低电量模式或恢复余量不足时禁止空闲满速。健康稳定 15 秒后先后台试跑 20 秒，没有复发再继续后台生成。接电、空闲 5 分钟，且最新采样中的其他 CPU、WindowServer 与显示信号都已平稳时，才解除后台策略。这些控制仍是 best-effort；`taskpolicy` 不是 GPU 硬配额。
 
 macOS 没有可通用于任意前台 App 的真实掉帧计数接口；守护器观察的是显示系统响应，而不是读取另一个 App 的渲染器。因此原生信号和回退指标仍属于 best-effort，而不是硬实时保证：`SIGSTOP` 无法撤回已经提交给 GPU 的 Metal 工作，也不会释放模型占用的统一内存。
 
@@ -51,6 +51,8 @@ cd ComfyUI-H3-Mac
 
 安装器会把 ComfyUI、h3.c、虚拟环境和模型放在本项目的 `runtime/` 下，便于整体移动或删除，不污染系统 Python。上游版本锁定在 `versions.env`，确保安装的是本版本已经验证过的组合。
 
+模型下载使用单独的锁定 Python 环境，不会改变 ComfyUI 的依赖。`runtime/models/MiniMax-H3` 是指向同一 `runtime/` 内内容寻址缓存的相对链接，整体移动项目后仍然有效。下载完成后会记录包含每个路径、尺寸、blob 标识和模型版本的清单；`Doctor.command` 会先核验清单，再调用 h3.c `--info` 检查模型结构。
+
 配置 schema v2 使用保守的一次性升级策略：先把旧配置备份为 `config.json.v1-backup`；只有完全匹配旧版随附 `background` 默认值的配置才迁移到新的 `adaptive` 行为，用户改过的行为或阈值都会保留。
 
 `Start.command` 会故意让 ComfyUI 控制层的 PyTorch 跑在 CPU。这**不会禁用 H3 的 Metal 推理**：H3 节点会启动单独编译的 h3.c Metal 进程。这个默认值能避免 ComfyUI 额外占用统一内存，也避免 PyTorch 设备探测失败。如果你同时使用必须依赖 MPS 的其他 ComfyUI 节点，可用 `H3_COMFY_DEVICE=auto ./Start.command` 启动。
@@ -69,6 +71,8 @@ cd ComfyUI-H3-Mac
 4. 如有更多素材，继续串联多个“添加参考”节点；顺序就是 Picture 1、Picture 2……
 5. 推荐添加 `H3 · 编写单镜头提示词`，分栏填写分镜并把输出连到生成节点的“提示词”。
 6. `H3 · 生成视频（Metal）`：连接最终参考素材，第一次用 `quality=preview`、`resource=low` 冒烟。
+
+低内存 Mac 的普通单镜头上限是 5 秒。更长的视频应拆成多个可复用镜头，再无损合并。h3.c 的机械上限仍是 362 帧（约 15.08 秒），但超过 5 秒只会在至少 64 GiB 内存的 Mac 上放行；专家确认内存压力和磁盘余量后也可显式设置 `H3_ALLOW_LARGE_JOB=1`。这是因为长镜头 VAE 解码在内存受限机器上出现过极端 swap 增长。
 
 确认构图正常后改成：
 
@@ -152,7 +156,7 @@ ComfyUI 是可视化节点画布、执行服务、API、队列、历史记录和
 - 自动化后端测试、shell 语法和 GitHub Actions：已验证。
 - 最新版锁定 ComfyUI 的 V3 节点注册：已验证。
 - 全新目录一键安装、h3.c Metal 编译、ComfyUI HTTP 启动和通过 `/object_info` 发现 H3 节点：已验证。
-- 使用真实 144 GB H3 权重完成生成：当前版本维护者环境尚未重新下载权重验证；欢迎有权重的用户反馈结果。
+- 使用真实锁定 H3 快照完成生成（Ref2VA 约 196 GiB 唯一 blob）：当前版本维护者环境尚未重新下载权重验证；欢迎有权重的用户反馈结果。
 
 ## 隐私、许可证与限制
 

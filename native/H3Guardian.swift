@@ -57,6 +57,23 @@ final class DisplayGapWindow: @unchecked Sendable {
         guard let lastArrival else { return nil }
         return max(0.0, (now - lastArrival) * 1_000.0)
     }
+
+    func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        lastArrival = nil
+        samples.removeAll(keepingCapacity: true)
+    }
+}
+
+private func thermalStateName(_ state: ProcessInfo.ThermalState) -> String {
+    switch state {
+    case .nominal: return "nominal"
+    case .fair: return "fair"
+    case .serious: return "serious"
+    case .critical: return "critical"
+    @unknown default: return "unknown"
+    }
 }
 
 private func legacyDisplayLinkCallback(
@@ -77,6 +94,28 @@ final class GuardianProbe: NSObject {
     private let gaps = DisplayGapWindow()
     private var retainedModernDisplayLink: AnyObject?
     private var legacyDisplayLink: CVDisplayLink?
+
+    @objc func resetCadence() {
+        gaps.reset()
+    }
+
+    private func stopDisplayLink() {
+        if #available(macOS 14.0, *),
+           let link = retainedModernDisplayLink as? CADisplayLink {
+            link.invalidate()
+        }
+        retainedModernDisplayLink = nil
+        if let link = legacyDisplayLink {
+            CVDisplayLinkStop(link)
+            legacyDisplayLink = nil
+        }
+    }
+
+    @objc func rebuildDisplayLink() {
+        stopDisplayLink()
+        gaps.reset()
+        startDisplayLink()
+    }
 
     func startDisplayLink() {
         if #available(macOS 14.0, *),
@@ -134,6 +173,13 @@ final class GuardianProbe: NSObject {
         let displayMaximumGapMS = gaps.maximumRecentGapMS(now: displayNow)
         let displayCallbackAgeMS = gaps.callbackAgeMS(now: displayNow)
         let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let processInfo = ProcessInfo.processInfo
+        let lowPowerModeEnabled: Any
+        if #available(macOS 12.0, *) {
+            lowPowerModeEnabled = processInfo.isLowPowerModeEnabled
+        } else {
+            lowPowerModeEnabled = NSNull()
+        }
 
         let object: [String: Any] = [
             "input_idle_seconds": inputIdle,
@@ -143,7 +189,9 @@ final class GuardianProbe: NSObject {
             "display_link_max_gap_ms": displayMaximumGapMS ?? NSNull(),
             "display_link_callback_age_ms": displayCallbackAgeMS ?? NSNull(),
             "frontmost_bundle_id": frontmostBundleID ?? NSNull(),
-            "sample_uptime": ProcessInfo.processInfo.systemUptime,
+            "thermal_state": thermalStateName(processInfo.thermalState),
+            "low_power_mode_enabled": lowPowerModeEnabled,
+            "sample_uptime": processInfo.systemUptime,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: object),
               let newline = "\n".data(using: .utf8) else { return }
@@ -160,6 +208,21 @@ _ = application.setActivationPolicy(.prohibited)
 let probe = GuardianProbe()
 probe.startDisplayLink()
 probe.emitNDJSON()
+
+// Sleep/wake and display reconfiguration gaps are not foreground jank. Clear
+// the short cadence window so the first post-wake sample cannot trigger Pause.
+NSWorkspace.shared.notificationCenter.addObserver(
+    probe,
+    selector: #selector(GuardianProbe.resetCadence),
+    name: NSWorkspace.didWakeNotification,
+    object: nil
+)
+NotificationCenter.default.addObserver(
+    probe,
+    selector: #selector(GuardianProbe.rebuildDisplayLink),
+    name: NSApplication.didChangeScreenParametersNotification,
+    object: nil
+)
 
 Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
     probe.emitNDJSON()

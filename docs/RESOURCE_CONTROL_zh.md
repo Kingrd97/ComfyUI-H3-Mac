@@ -10,9 +10,11 @@
 
 `low`、`max` 和手动“暂停”的语义保持不变；自适应暂停只作用于 `auto`。
 
+低于 64 GiB 的 Mac，生成节点普通上限为单镜头 5 秒；更长内容请用分镜合并。h3.c 的硬上限仍是 362 帧（约 15.08 秒），但 `H3_ALLOW_LARGE_JOB=1` 只作为专家显式开关：[h3.c issue #5](https://github.com/antirez/h3.c/issues/5) 报告了 64GB M4 Max 在 10 秒、960×544 的 VAE 解码阶段把 swap 推到约 64 GiB。打开开关并不代表 48GB 机器一定能安全完成。
+
 ## 自适应卡顿保护怎样判断
 
-`Install.command` 会编译一个很小的原生 `h3-guardian` helper。它不会激活 App 或创建窗口，只读取当前会话最近输入时间和 display-link 回调时序，不捕获屏幕内容，也不需要“辅助功能”或“屏幕录制”权限。主显示器 framebuffer age 只作为诊断遥测输出，不是暂停触发条件。如果旧版 Xcode SDK 无法编译 helper，安装仍会继续，`auto` 暂时使用回退指标；升级 Command Line Tools 后重跑安装即可启用原生信号。
+`Install.command` 会编译一个很小的原生 `h3-guardian` helper。它只在调度策略为 `auto` 时运行，意外退出后会自动重启，切换到 `low` 或 `max` 时会停止。它不会激活 App 或创建窗口，只读取当前会话最近输入时间和 display-link 回调时序，同时上报 macOS 温度状态和低电量模式；不捕获屏幕内容，也不需要“辅助功能”或“屏幕录制”权限。主显示器 framebuffer age 只作为诊断遥测输出，不是暂停触发条件；睡眠唤醒或显示器重配会清空短时节奏窗口，避免误判成前台卡顿。如果旧版 Xcode SDK 无法编译 helper，安装仍会继续，`auto` 暂时使用回退指标；升级 Command Line Tools 后重跑安装即可启用原生信号。
 
 主要强信号是：最近发生过键盘/鼠标输入，同时 display-link 回调间隔或回调 age 在连续多个原生采样中都异常。它说明显示回调服务没有按节奏到达，调度器可以在下一次 0.5 秒控制轮询时暂停 H3，不必再等较慢的回退计时。framebuffer age 可能因正常原因显得陈旧，绝不会进入这条强触发；helper 仍不读取前台 App 自己的渲染器或 FPS。
 
@@ -23,7 +25,13 @@
 
 控制器每 0.5 秒检查原生/用户/控制状态，每 2 秒刷新一次开销较高的进程和 GPU 回退指标。过载消失且恢复指标连续健康 15 秒后，H3 会先按后台优先级试跑 20 秒；试跑中再次过载就重新暂停，没有复发才回到正常后台慢跑。另一条独立规则是：接电、无键鼠操作满 5 分钟，且最新采样显示其他 CPU、WindowServer 和显示信号都已平稳时，`auto` 才解除 macOS 后台策略，以正常优先级全速生成。
 
+`auto` 还会每 10 秒读取一次系统公开的 `memory_pressure`、`vm.swapusage` 和 `vm_stat` 诊断。建议可用内存比例降到 8% 或更低、温度达到 serious/critical，或 swap/pageout 增长速率越过配置阈值时，会立即暂停；恢复仍需经过健康等待和后台试跑，内存比例至少回到 15%。温度为 fair、开启低电量模式、内存尚未恢复、使用电池或前台仍繁忙时，都不会进入空闲满速。它们是保守代理指标；暂停只能阻止压力继续增加，不能驱逐 H3 已占用的统一内存。
+
+macOS `taskpolicy` 同样是 best-effort。后台/前台策略设置失败时不会假装成功，而会在退避后重试；它只影响 CPU/I/O 调度优先级，不是 Metal GPU 硬配额。实时状态只在状态改变或每 15 秒写一次，不再跟随每次指标采样落盘。
+
 macOS 没有公开、通用的接口可以读取任意前台 App 的真实掉帧率。因此，原生显示信号和 CPU/WindowServer/GPU 指标属于响应证据和代理信号，不能证明某个 App 确实掉了一帧。这套保护是 best-effort，不是硬实时保证。特别是 `SIGSTOP` 无法撤回已经提交给 GPU 的 Metal command buffer，暂停决策之后可能仍有一小段 GPU 工作完成；暂停也不会释放模型占用的统一内存。如果 helper 缺失或退出，`auto` 会无权限地退回指标路径，而不是要求用户开放额外权限。
+
+引擎使用 `caffeinate -s` 包装：只有接电时才阻止系统因空闲睡眠，电池供电时仍遵循 macOS 正常睡眠策略。如果 ComfyUI 崩溃，下次运行 `Start.command` 只会在引擎和控制器出生指纹都完整、且能证明原控制器已经退出时清理对应 H3；旧版或身份不明确的记录不会自动终止。这是启动恢复保护，不是可落盘的去噪检查点。
 
 ## 控制正在运行的任务
 
@@ -74,6 +82,8 @@ streaming 对 checkpoint 做只读、非缓存读取，不会反复改写模型�
   "auto_idle_seconds": 300,
   "auto_poll_seconds": 0.5,
   "auto_metrics_poll_seconds": 2,
+  "auto_health_poll_seconds": 10,
+  "auto_status_interval_seconds": 15,
   "auto_max_external_cpu_percent": 120,
   "auto_active_behavior": "adaptive",
   "auto_jank_interaction_seconds": 5,
@@ -85,6 +95,10 @@ streaming 对 checkpoint 做只读、非缓存读取，不会反复改写模型�
   "auto_jank_window_server_recover_percent": 50,
   "auto_jank_gpu_percent": 92,
   "auto_jank_gpu_recover_percent": 70,
+  "auto_memory_pause_percent": 8,
+  "auto_memory_recover_percent": 15,
+  "auto_swap_growth_pause_mib_per_minute": 512,
+  "auto_pageout_pause_mib_per_minute": 256,
   "auto_require_ac_power": true
 }
 ```

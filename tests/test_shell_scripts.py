@@ -1,4 +1,5 @@
 import ast
+import fcntl
 import json
 import os
 import platform
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -14,10 +16,48 @@ from unittest.mock import patch
 import pytest
 
 from scripts import h3_control
-from h3_bridge.scheduler import process_group_stopped
+from h3_bridge.job_registry import (
+    activate_job,
+    finish_job,
+    register_starting_job,
+    registered_jobs,
+)
+from h3_bridge.scheduler import process_group_stopped, process_start_signature
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@contextmanager
+def held_generation_lock(
+    project_root: Path,
+    *,
+    token: str,
+    job_id: str,
+    controller_pid: int = 777,
+    controller_birth: str = "controller-birth",
+):
+    lock_path = project_root / "runtime" / "h3-generation.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = lock_path.open("a+", encoding="utf-8")
+    lock.write(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "controller_pid": controller_pid,
+                "controller_start_signature": controller_birth,
+                "registration_token": token,
+                "job_id": job_id,
+            }
+        )
+    )
+    lock.flush()
+    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        yield lock
+    finally:
+        if not lock.closed:
+            lock.close()
 
 
 def test_every_shell_script_parses():
@@ -28,6 +68,37 @@ def test_every_shell_script_parses():
 
     for script in scripts:
         subprocess.run(["bash", "-n", str(script)], check=True)
+
+
+def test_guardian_rebinds_display_link_after_screen_reconfiguration():
+    source = (ROOT / "native" / "H3Guardian.swift").read_text(encoding="utf-8")
+
+    assert "func rebuildDisplayLink()" in source
+    assert "link.invalidate()" in source
+    assert "CVDisplayLinkStop(link)" in source
+    assert (
+        "selector: #selector(GuardianProbe.rebuildDisplayLink)" in source
+    )
+
+
+def test_installer_is_pinned_and_model_tooling_is_isolated():
+    install = (ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
+    download = (ROOT / "scripts" / "download_model.sh").read_text(encoding="utf-8")
+    doctor = (ROOT / "scripts" / "doctor.sh").read_text(encoding="utf-8")
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    versions = (ROOT / "versions.env").read_text(encoding="utf-8")
+
+    assert "runtime/model-tools-venv" in download
+    assert 'huggingface_hub==$HUGGINGFACE_HUB_VERSION' in install
+    assert "H3_MODEL_REF=" in versions
+    assert "HUGGINGFACE_HUB_VERSION=1.26.0" in versions
+    assert "MACOSX_DEPLOYMENT_TARGET=15.0" in install
+    assert "xcrun --sdk macosx --show-sdk-version" in install
+    assert '"$sdk_major" -ge 26' in install
+    assert "xcrun --sdk macosx --show-sdk-version" in doctor
+    assert '"$sdk_major" -ge 26' in doctor
+    assert install.count('-m venv --clear "$') == 2
+    assert "huggingface_hub==" not in requirements
 
 
 def test_h3_control_uses_only_the_locked_shared_signal_helper():
@@ -50,7 +121,16 @@ def test_h3_control_uses_only_the_locked_shared_signal_helper():
 def test_pause_serializes_intent_and_immediate_stop(tmp_path: Path):
     updates: list[dict[str, object]] = []
     status = {"pgid": 4242, "state": "running"}
-    with patch.object(h3_control, "active_jobs", return_value=[(tmp_path, status)]), patch.object(
+    selected_config = SimpleNamespace()
+    with patch.object(
+        h3_control, "load_config", return_value=selected_config
+    ), patch.object(
+        h3_control,
+        "_active_job_candidates",
+        return_value=[(tmp_path, status, None)],
+    ), patch.object(
+        h3_control, "_legacy_control_authorized", return_value=True
+    ), patch.object(
         h3_control,
         "update_control",
         side_effect=lambda _job, **values: updates.append(values),
@@ -68,6 +148,25 @@ def test_process_match_searches_whole_group_for_h3(tmp_path: Path):
     completed = subprocess.CompletedProcess([], 0, stdout=output, stderr="")
     with patch.object(h3_control.subprocess, "run", return_value=completed):
         assert h3_control.process_matches_h3(4242, binary)
+
+
+def test_process_birth_signature_is_locale_independent():
+    calls: list[dict[str, str]] = []
+
+    def run(*_args, **kwargs):
+        calls.append(kwargs["env"])
+        return subprocess.CompletedProcess([], 0, stdout="Mon Jan  1 00:00:00 2024\n")
+
+    with patch("h3_bridge.scheduler.platform.system", return_value="Darwin"), patch(
+        "h3_bridge.scheduler.subprocess.run", side_effect=run
+    ):
+        with patch.dict(os.environ, {"LC_ALL": "zh_CN.UTF-8", "LANG": "zh_CN.UTF-8"}):
+            first = process_start_signature(4242)
+        with patch.dict(os.environ, {"LC_ALL": "fr_FR.UTF-8", "LANG": "fr_FR.UTF-8"}):
+            second = process_start_signature(4242)
+
+    assert first == second == "Mon Jan  1 00:00:00 2024"
+    assert all(call["LC_ALL"] == "C" and call["LANG"] == "C" for call in calls)
 
 
 def test_control_updates_are_serialized_without_lost_fields(tmp_path: Path):
@@ -144,6 +243,684 @@ def test_active_jobs_accepts_stale_status_with_matching_birth(tmp_path: Path):
         selected = h3_control.active_jobs()
 
     assert selected[0][0] == job_dir
+
+
+def test_active_jobs_discovers_registered_custom_output(tmp_path: Path):
+    job_id = "a" * 20
+    job_dir = (tmp_path / "elsewhere" / "h3-jobs" / job_id).resolve()
+    job_dir.mkdir(parents=True)
+    registration = register_starting_job(
+        tmp_path,
+        job_dir,
+        job_id,
+        "h3-jobs",
+        controller_pid=777,
+        controller_start_signature="controller-birth",
+    )
+    activate_job(
+        tmp_path,
+        registration.entry_path,
+        registration.token,
+        pgid=4242,
+        process_start_signature="engine-birth",
+    )
+    status = {
+        "pgid": 4242,
+        "controller_pid": 777,
+        "state": "running",
+        "updated_at": 0,
+        "process_start_signature": "engine-birth",
+        "controller_start_signature": "controller-birth",
+    }
+    (job_dir / "process.json").write_text(json.dumps(status), encoding="utf-8")
+    selected_config = SimpleNamespace(
+        output_subdir="h3-jobs",
+        h3_binary=tmp_path / "h3",
+        auto_metrics_poll_seconds=2.0,
+    )
+    try:
+        with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+            h3_control, "load_config", return_value=selected_config
+        ), patch.object(
+            h3_control, "process_start_signature", return_value="engine-birth"
+        ), patch.object(h3_control, "process_group_alive", return_value=True), patch.object(
+            h3_control, "process_matches_h3"
+        ) as process_match:
+            # A stale registry/status pair without its inherited generation
+            # lock is never displayed as controllable.
+            assert h3_control.active_jobs() == []
+            with held_generation_lock(
+                tmp_path, token=registration.token, job_id=job_id
+            ):
+                assert h3_control.active_jobs() == [(job_dir, status)]
+        process_match.assert_not_called()
+    finally:
+        finish_job(registration, "test-cleanup")
+
+
+@pytest.mark.parametrize(
+    ("lock_token", "process_birth", "leader_exists", "expected"),
+    [
+        ("0" * 32, "engine-birth", False, False),
+        ("registration", "replacement-birth", False, False),
+        ("registration", "", True, False),
+        ("registration", "", False, True),
+    ],
+    ids=["lock-mismatch", "pgid-reused", "ps-failed", "leaderless-valid"],
+)
+def test_registered_active_control_requires_lock_and_process_identity(
+    tmp_path: Path,
+    lock_token: str,
+    process_birth: str,
+    leader_exists: bool,
+    expected: bool,
+):
+    job_id = "b" * 20
+    job_dir = (tmp_path / "elsewhere" / "h3-jobs" / job_id).resolve()
+    job_dir.mkdir(parents=True)
+    registration = register_starting_job(
+        tmp_path,
+        job_dir,
+        job_id,
+        "h3-jobs",
+        controller_pid=777,
+        controller_start_signature="controller-birth",
+    )
+    activate_job(
+        tmp_path,
+        registration.entry_path,
+        registration.token,
+        pgid=4242,
+        process_start_signature="engine-birth",
+    )
+    status = {
+        "pgid": 4242,
+        "controller_pid": 777,
+        "state": "running",
+        "updated_at": time.time(),
+        "process_start_signature": "engine-birth",
+        "controller_start_signature": "controller-birth",
+    }
+    (job_dir / "process.json").write_text(json.dumps(status), encoding="utf-8")
+    selected_config = SimpleNamespace(
+        output_subdir="h3-jobs",
+        h3_binary=tmp_path / "h3",
+        auto_metrics_poll_seconds=2.0,
+    )
+    selected_token = registration.token if lock_token == "registration" else lock_token
+    try:
+        with held_generation_lock(
+            tmp_path, token=selected_token, job_id=job_id
+        ), patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+            h3_control, "load_config", return_value=selected_config
+        ), patch.object(
+            h3_control, "process_start_signature", return_value=process_birth
+        ), patch.object(
+            h3_control, "process_alive", return_value=leader_exists
+        ), patch.object(
+            h3_control, "process_group_alive", return_value=True
+        ), patch.object(h3_control, "process_matches_h3") as process_match:
+            selected = h3_control.active_jobs()
+
+        assert bool(selected) is expected
+        process_match.assert_not_called()
+    finally:
+        finish_job(registration, "test-cleanup")
+
+
+def test_control_reauthorizes_registered_job_immediately_before_signal(
+    tmp_path: Path,
+):
+    job_id = "4" * 20
+    job_dir = (tmp_path / "custom" / "h3-jobs" / job_id).resolve()
+    job_dir.mkdir(parents=True)
+    registration = register_starting_job(
+        tmp_path,
+        job_dir,
+        job_id,
+        "h3-jobs",
+        controller_pid=777,
+        controller_start_signature="controller-birth",
+    )
+    activate_job(
+        tmp_path,
+        registration.entry_path,
+        registration.token,
+        pgid=4242,
+        process_start_signature="engine-birth",
+    )
+    status = {
+        "pgid": 4242,
+        "controller_pid": 777,
+        "state": "running",
+        "updated_at": time.time(),
+        "process_start_signature": "engine-birth",
+        "controller_start_signature": "controller-birth",
+    }
+    (job_dir / "process.json").write_text(json.dumps(status), encoding="utf-8")
+    selected_config = SimpleNamespace(
+        output_subdir="h3-jobs",
+        h3_binary=tmp_path / "h3",
+        auto_metrics_poll_seconds=2.0,
+    )
+    try:
+        with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+            h3_control, "load_config", return_value=selected_config
+        ), patch.object(
+            h3_control,
+            "_registered_control_authorized",
+            side_effect=[True, False],
+        ) as authorize, patch.object(h3_control, "update_control") as update:
+            assert h3_control.control("pause") == 1
+
+        assert authorize.call_count == 2
+        update.assert_not_called()
+    finally:
+        finish_job(registration, "test-cleanup")
+
+
+def test_registered_custom_output_orphan_requires_matching_identities(tmp_path: Path):
+    job_id = "c" * 20
+    job_dir = (tmp_path / "custom" / "h3-jobs" / job_id).resolve()
+    job_dir.mkdir(parents=True)
+    registration = register_starting_job(
+        tmp_path,
+        job_dir,
+        job_id,
+        "h3-jobs",
+        controller_pid=777,
+        controller_start_signature="controller-birth",
+    )
+    activate_job(
+        tmp_path,
+        registration.entry_path,
+        registration.token,
+        pgid=4242,
+        process_start_signature="engine-birth",
+    )
+    status = {
+        "pgid": 4242,
+        "controller_pid": 777,
+        "state": "running",
+        "updated_at": time.time(),
+        "process_start_signature": "engine-birth",
+        "controller_start_signature": "controller-birth",
+    }
+    selected_config = SimpleNamespace(
+        output_subdir="h3-jobs",
+        h3_binary=tmp_path / "h3",
+        auto_metrics_poll_seconds=2.0,
+    )
+
+    def signature(pid: int) -> str:
+        return "engine-birth" if pid == 4242 else ""
+
+    try:
+        # The registry identity is sufficient during the child-before-exec to
+        # first-process.json window; a dead controller cannot strand the lock.
+        with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+            h3_control, "load_config", return_value=selected_config
+        ), patch.object(
+            h3_control, "process_start_signature", side_effect=signature
+        ), patch.object(h3_control, "process_group_alive", return_value=True), patch.object(
+            h3_control, "process_matches_h3", return_value=True
+        ), patch.object(h3_control, "process_alive", return_value=False):
+            pre_status_orphans = h3_control.orphan_jobs()
+        assert pre_status_orphans[0][0] == job_dir
+        assert pre_status_orphans[0][1]["process_start_signature"] == "engine-birth"
+
+        (job_dir / "process.json").write_text(json.dumps(status), encoding="utf-8")
+        with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+            h3_control, "load_config", return_value=selected_config
+        ), patch.object(
+            h3_control, "process_start_signature", side_effect=signature
+        ), patch.object(h3_control, "process_group_alive", return_value=True), patch.object(
+            h3_control, "process_matches_h3", return_value=True
+        ), patch.object(h3_control, "process_alive", return_value=False):
+            assert h3_control.orphan_jobs() == [(job_dir, status)]
+
+        # A stale/corrupt status cannot redirect the registry to another PID;
+        # the current two-sided registry remains the cleanup authority.
+        status["pgid"] = 9999
+        (job_dir / "process.json").write_text(json.dumps(status), encoding="utf-8")
+        with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+            h3_control, "load_config", return_value=selected_config
+        ), patch.object(
+            h3_control, "process_group_alive", return_value=True
+        ), patch.object(
+            h3_control, "process_start_signature", side_effect=signature
+        ), patch.object(h3_control, "process_alive", return_value=False):
+            selected = h3_control.orphan_jobs()
+        assert selected[0][0] == job_dir
+        assert selected[0][1]["pgid"] == 4242
+        assert selected[0][1]["_registry_only"] is True
+    finally:
+        finish_job(registration, "test-cleanup")
+
+
+def test_orphan_detection_requires_complete_exact_birth_fingerprints(tmp_path: Path):
+    job_dir = write_job_status(
+        tmp_path,
+        controller_pid=777,
+        controller_start_signature="old-controller-birth",
+    )
+    selected_config = SimpleNamespace(
+        output_subdir="h3-jobs",
+        h3_binary=tmp_path / "h3",
+        auto_metrics_poll_seconds=2.0,
+    )
+
+    def signature(pid: int) -> str:
+        return "expected-birth" if pid == 4242 else "reused-controller-birth"
+
+    with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+        h3_control, "load_config", return_value=selected_config
+    ), patch.object(
+        h3_control, "process_start_signature", side_effect=signature
+    ), patch.object(h3_control, "process_group_alive", return_value=True), patch.object(
+        h3_control, "process_matches_h3", return_value=True
+    ), patch.object(h3_control, "process_alive", return_value=True):
+        selected = h3_control.orphan_jobs()
+
+    assert selected == [(job_dir, json.loads((job_dir / "process.json").read_text()))]
+
+    status = json.loads((job_dir / "process.json").read_text())
+    status.pop("controller_start_signature")
+    (job_dir / "process.json").write_text(json.dumps(status))
+    with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+        h3_control, "load_config", return_value=selected_config
+    ), patch.object(h3_control, "process_group_alive") as group_alive:
+        assert h3_control.orphan_jobs() == []
+    group_alive.assert_not_called()
+
+
+def test_cleanup_orphan_continues_before_terminating_stopped_group(tmp_path: Path):
+    status = {
+        "pgid": 4242,
+        "state": "paused",
+        "process_start_signature": "engine-birth",
+    }
+    (tmp_path / "process.json").write_text(json.dumps(status), encoding="utf-8")
+    updates: list[dict[str, object]] = []
+    with patch.object(h3_control, "orphan_jobs", return_value=[(tmp_path, status)]), patch.object(
+        h3_control,
+        "update_control",
+        side_effect=lambda _job, **values: updates.append(values) or True,
+    ), patch.object(h3_control, "process_group_alive", return_value=False):
+        assert h3_control.cleanup_orphans() == 1
+
+    assert updates == [
+        {"pgid": 4242, "selected_signal": signal.SIGCONT, "paused": False},
+        {"pgid": 4242, "selected_signal": signal.SIGTERM},
+    ]
+    final = json.loads((tmp_path / "process.json").read_text(encoding="utf-8"))
+    assert final["state"] == "orphan-terminated"
+
+
+def test_registered_orphan_with_free_lock_never_signals_reused_pgid(
+    tmp_path: Path,
+):
+    job_id = "f" * 20
+    job_dir = (tmp_path / "custom" / "h3-jobs" / job_id).resolve()
+    job_dir.mkdir(parents=True)
+    registration = register_starting_job(
+        tmp_path,
+        job_dir,
+        job_id,
+        "h3-jobs",
+        controller_pid=777,
+        controller_start_signature="controller-birth",
+    )
+    activate_job(
+        tmp_path,
+        registration.entry_path,
+        registration.token,
+        pgid=4242,
+        process_start_signature="engine-birth",
+    )
+    status = {
+        "pgid": 4242,
+        "controller_pid": 777,
+        "state": "running",
+        "process_start_signature": "engine-birth",
+        "controller_start_signature": "controller-birth",
+    }
+    (job_dir / "process.json").write_text(json.dumps(status), encoding="utf-8")
+    selected_config = SimpleNamespace(
+        output_subdir="h3-jobs",
+        h3_binary=tmp_path / "h3",
+        auto_metrics_poll_seconds=2.0,
+    )
+    updates: list[dict[str, object]] = []
+    try:
+        with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+            h3_control, "load_config", return_value=selected_config
+        ), patch.object(
+            h3_control, "orphan_jobs", return_value=[(job_dir, status)]
+        ), patch.object(
+            h3_control,
+            "update_control",
+            side_effect=lambda _job, **values: updates.append(values),
+        ), patch.object(
+            h3_control, "process_start_signature", return_value=""
+        ), patch.object(h3_control, "process_group_alive", return_value=True):
+            assert h3_control.cleanup_orphans() == 1
+        assert updates == []
+        assert not registration.entry_path.exists()
+        final = json.loads((job_dir / "process.json").read_text(encoding="utf-8"))
+        assert final["state"] == "orphan-stale"
+    finally:
+        finish_job(registration, "test-cleanup")
+
+
+def test_registered_terminal_write_stays_inside_lock_before_new_token(
+    tmp_path: Path,
+):
+    job_id = "2" * 20
+    job_dir = (tmp_path / "custom" / "h3-jobs" / job_id).resolve()
+    job_dir.mkdir(parents=True)
+    old = register_starting_job(
+        tmp_path,
+        job_dir,
+        job_id,
+        "h3-jobs",
+        controller_pid=777,
+        controller_start_signature="old-controller",
+    )
+    activate_job(
+        tmp_path,
+        old.entry_path,
+        old.token,
+        pgid=4242,
+        process_start_signature="old-engine",
+    )
+    old_status = {
+        "pgid": 4242,
+        "controller_pid": 777,
+        "state": "running",
+        "process_start_signature": "old-engine",
+        "controller_start_signature": "old-controller",
+    }
+    (job_dir / "process.json").write_text(
+        json.dumps(old_status), encoding="utf-8"
+    )
+    selected_config = SimpleNamespace(
+        output_subdir="h3-jobs",
+        h3_binary=tmp_path / "h3",
+        auto_metrics_poll_seconds=2.0,
+    )
+    new_registrations = []
+    new_status = {
+        "pgid": 5252,
+        "controller_pid": 888,
+        "state": "running",
+        "process_start_signature": "new-engine",
+        "controller_start_signature": "new-controller",
+    }
+
+    @contextmanager
+    def observation():
+        yield True, {}
+        # This runs exactly when the observation lock is released. A terminal
+        # write performed after the with-block would corrupt this new job.
+        new = register_starting_job(
+            tmp_path,
+            job_dir,
+            job_id,
+            "h3-jobs",
+            controller_pid=888,
+            controller_start_signature="new-controller",
+        )
+        activate_job(
+            tmp_path,
+            new.entry_path,
+            new.token,
+            pgid=5252,
+            process_start_signature="new-engine",
+        )
+        new_registrations.append(new)
+        (job_dir / "process.json").write_text(
+            json.dumps(new_status), encoding="utf-8"
+        )
+
+    updates: list[dict[str, object]] = []
+    try:
+        with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+            h3_control, "load_config", return_value=selected_config
+        ), patch.object(
+            h3_control, "orphan_jobs", return_value=[(job_dir, old_status)]
+        ), patch.object(
+            h3_control, "generation_lock_observation", new=observation
+        ), patch.object(
+            h3_control,
+            "update_control",
+            side_effect=lambda _job, **values: updates.append(values),
+        ):
+            assert h3_control.cleanup_orphans() == 1
+
+        assert updates == []
+        assert json.loads(
+            (job_dir / "process.json").read_text(encoding="utf-8")
+        ) == new_status
+        current = list(registered_jobs(tmp_path, "h3-jobs"))
+        assert len(current) == 1
+        assert current[0].token == new_registrations[0].token
+    finally:
+        finish_job(old, "test-cleanup")
+        for new in new_registrations:
+            finish_job(new, "test-cleanup")
+
+
+def test_registered_leaderless_group_waits_for_delayed_lock_release(
+    tmp_path: Path,
+):
+    job_id = "1" * 20
+    job_dir = (tmp_path / "custom" / "h3-jobs" / job_id).resolve()
+    job_dir.mkdir(parents=True)
+    registration = register_starting_job(
+        tmp_path,
+        job_dir,
+        job_id,
+        "h3-jobs",
+        controller_pid=777,
+        controller_start_signature="controller-birth",
+    )
+    activate_job(
+        tmp_path,
+        registration.entry_path,
+        registration.token,
+        pgid=4242,
+        process_start_signature="engine-birth",
+    )
+    status = {
+        "pgid": 4242,
+        "controller_pid": 777,
+        "state": "running",
+        "process_start_signature": "engine-birth",
+        "controller_start_signature": "controller-birth",
+    }
+    (job_dir / "process.json").write_text(json.dumps(status), encoding="utf-8")
+    selected_config = SimpleNamespace(
+        output_subdir="h3-jobs",
+        h3_binary=tmp_path / "h3",
+        auto_metrics_poll_seconds=2.0,
+    )
+    lock_path = tmp_path / "runtime" / "h3-generation.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = lock_path.open("a+", encoding="utf-8")
+    lock.write(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "controller_pid": 777,
+                "controller_start_signature": "controller-birth",
+                "registration_token": registration.token,
+                "job_id": job_id,
+            }
+        )
+    )
+    lock.flush()
+    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    group_checks = 0
+
+    def group_alive(_pgid: int) -> bool:
+        nonlocal group_checks
+        group_checks += 1
+        return group_checks <= 2
+
+    updates: list[dict[str, object]] = []
+    release_timer: threading.Timer | None = None
+
+    def update(_job: Path, **values: object) -> bool:
+        nonlocal release_timer
+        updates.append(values)
+        if values.get("selected_signal") == signal.SIGTERM:
+            # Model the final inherited descriptor closing when the remaining
+            # leaderless child exits shortly after TERM returns.
+            release_timer = threading.Timer(0.15, lock.close)
+            release_timer.start()
+        return True
+
+    try:
+        with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+            h3_control, "load_config", return_value=selected_config
+        ), patch.object(
+            h3_control, "orphan_jobs", return_value=[(job_dir, status)]
+        ), patch.object(
+            h3_control, "process_start_signature", return_value=""
+        ), patch.object(h3_control, "process_alive", return_value=False), patch.object(
+            h3_control, "process_group_alive", side_effect=group_alive
+        ), patch.object(
+            h3_control,
+            "update_control",
+            side_effect=update,
+        ):
+            assert h3_control.cleanup_orphans() == 1
+        assert [value["selected_signal"] for value in updates] == [
+            signal.SIGCONT,
+            signal.SIGTERM,
+        ]
+        assert not registration.entry_path.exists()
+    finally:
+        if release_timer is not None:
+            release_timer.join(timeout=1)
+        if not lock.closed:
+            lock.close()
+        finish_job(registration, "test-cleanup")
+
+
+def test_registered_cleanup_waits_for_delayed_lock_release_after_kill(
+    tmp_path: Path,
+):
+    job_id = "3" * 20
+    job_dir = (tmp_path / "custom" / "h3-jobs" / job_id).resolve()
+    job_dir.mkdir(parents=True)
+    registration = register_starting_job(
+        tmp_path,
+        job_dir,
+        job_id,
+        "h3-jobs",
+        controller_pid=777,
+        controller_start_signature="controller-birth",
+    )
+    activate_job(
+        tmp_path,
+        registration.entry_path,
+        registration.token,
+        pgid=4242,
+        process_start_signature="engine-birth",
+    )
+    status = {
+        "pgid": 4242,
+        "controller_pid": 777,
+        "state": "running",
+        "process_start_signature": "engine-birth",
+        "controller_start_signature": "controller-birth",
+    }
+    (job_dir / "process.json").write_text(json.dumps(status), encoding="utf-8")
+    selected_config = SimpleNamespace(
+        output_subdir="h3-jobs",
+        h3_binary=tmp_path / "h3",
+        auto_metrics_poll_seconds=2.0,
+    )
+    lock_path = tmp_path / "runtime" / "h3-generation.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = lock_path.open("a+", encoding="utf-8")
+    lock.write(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "controller_pid": 777,
+                "controller_start_signature": "controller-birth",
+                "registration_token": registration.token,
+                "job_id": job_id,
+            }
+        )
+    )
+    lock.flush()
+    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    phase = ["term"]
+    term_group_checks = [0]
+    release_timer: threading.Timer | None = None
+    updates: list[dict[str, object]] = []
+
+    def group_alive(_pgid: int) -> bool:
+        if phase[0] == "killed":
+            return False
+        term_group_checks[0] += 1
+        # Initial identity succeeds, the outer TERM wait observes leader exit,
+        # then the still-locked descendants remain signalable until KILL.
+        return term_group_checks[0] != 2
+
+    def update(_job: Path, **values: object) -> bool:
+        nonlocal release_timer
+        updates.append(values)
+        if values.get("selected_signal") == signal.SIGKILL:
+            phase[0] = "killed"
+            release_timer = threading.Timer(0.15, lock.close)
+            release_timer.start()
+        return True
+
+    try:
+        with patch.object(h3_control, "PROJECT_ROOT", tmp_path), patch.object(
+            h3_control, "load_config", return_value=selected_config
+        ), patch.object(
+            h3_control, "orphan_jobs", return_value=[(job_dir, status)]
+        ), patch.object(
+            h3_control,
+            "process_start_signature",
+            return_value="engine-birth",
+        ), patch.object(
+            h3_control, "process_group_alive", side_effect=group_alive
+        ), patch.object(h3_control, "update_control", side_effect=update):
+            assert h3_control.cleanup_orphans() == 1
+
+        assert [value["selected_signal"] for value in updates] == [
+            signal.SIGCONT,
+            signal.SIGTERM,
+            signal.SIGKILL,
+        ]
+        assert not registration.entry_path.exists()
+    finally:
+        if release_timer is not None:
+            release_timer.join(timeout=1)
+        if not lock.closed:
+            lock.close()
+        finish_job(registration, "test-cleanup")
+
+
+def test_original_group_remains_live_when_leader_is_gone_but_children_remain():
+    with patch.object(h3_control, "process_group_alive", return_value=True), patch.object(
+        h3_control, "process_start_signature", return_value=""
+    ):
+        assert h3_control.original_process_group_alive(4242, "engine-birth")
+
+    # A different non-empty leader birth means the old group is gone and the
+    # numeric ID was reused; Control must not signal the replacement.
+    with patch.object(h3_control, "process_group_alive", return_value=True), patch.object(
+        h3_control, "process_start_signature", return_value="replacement-birth"
+    ):
+        assert not h3_control.original_process_group_alive(4242, "engine-birth")
 
 
 def test_locked_cli_control_really_stops_and_resumes_group(tmp_path: Path):
