@@ -16,14 +16,19 @@ h3_bridge runner
    ├── progress and cancellation
    └── persistent request, log, partial and result files
    │ argv (never shell=True)
+   ├── h3.c runner: Ref2VA / FL2VA, adaptive pause and resume
+   └── vpipe runner: Q8 FL2VA Metal, low / max, silent-shot mode
    ▼
-antirez/h3.c ── Metal inference ── FFmpeg MP4
+antirez/h3.c or vpipe ── Metal inference ── FFmpeg MP4
    │
    ▼
 ComfyUI native VIDEO output and preview
    │ completed shot job directories
    ▼
 Storyboard assembler ── validated paths ── FFmpeg stream-copy MP4
+   │
+   ▼
+Fixed narration ── one macOS voice + timed cues ── final AAC MP4
 ```
 
 ## Boundaries
@@ -31,7 +36,8 @@ Storyboard assembler ── validated paths ── FFmpeg stream-copy MP4
 - ComfyUI owns graph composition and reusable creative workflows.
 - The bridge owns input materialization, validation, scheduling and job persistence.
 - The storyboard layer owns structured prompt composition and ordered assembly of completed jobs; it never runs model inference itself.
-- h3.c owns model loading, conditioning, inference, decoding and MP4 generation.
+- h3.c or vpipe owns model loading, conditioning, inference, decoding and MP4 generation.
+- The narration layer intentionally runs after assembly. It prevents independently sampled H3 audio from changing the character voice between shots.
 - Model acquisition is separate because model terms and storage needs differ from source code.
 
 ## Safety properties

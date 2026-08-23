@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-h3-mac"
-version = "0.4.0"
-description = "A bilingual, storyboard-friendly ComfyUI bridge for h3.c on Apple Silicon Macs"
+version = "0.5.0"
+description = "A bilingual ComfyUI bridge for h3.c and vpipe H3 backends on Apple Silicon Macs"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

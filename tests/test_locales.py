@@ -12,6 +12,8 @@ EXPECTED_NODES = {
     "H3AddAudioReference",
     "H3AddMediaFileReference",
     "H3GenerateVideo",
+    "H3GenerateVideoVPipe",
+    "H3AddFixedNarration",
     "H3AssembleStoryboard",
 }
 
@@ -38,4 +40,14 @@ def test_beginner_storyboard_template_is_valid_and_contains_the_guided_flow():
     assert node_types.count("H3BuildShotPrompt") == 2
     assert node_types.count("H3GenerateVideo") == 2
     assert node_types.count("H3AssembleStoryboard") == 1
+    assert workflow["version"] == 0.4
+
+
+def test_vpipe_fixed_voice_template_contains_the_full_postproduction_flow():
+    path = ROOT / "example_workflows" / "H3_vpipe_Q8_2_Shot_Fixed_Voice.json"
+    workflow = json.loads(path.read_text(encoding="utf-8"))
+    node_types = [node["type"] for node in workflow["nodes"]]
+    assert node_types.count("H3GenerateVideoVPipe") == 2
+    assert node_types.count("H3AssembleStoryboard") == 1
+    assert node_types.count("H3AddFixedNarration") == 1
     assert workflow["version"] == 0.4

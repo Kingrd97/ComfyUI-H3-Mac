@@ -8,6 +8,7 @@ MODEL_ROOT="$PROJECT_ROOT/runtime/models/MiniMax-H3"
 MODEL_MANIFEST="$PROJECT_ROOT/runtime/models/MiniMax-H3.manifest.json"
 MODEL_VENV="$PROJECT_ROOT/runtime/model-tools-venv"
 source "$PROJECT_ROOT/versions.env"
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 failed=0
 
 check() {
@@ -59,6 +60,7 @@ sdk_major="${sdk_version%%.*}"
 [[ "$sdk_major" =~ ^[0-9]+$ && "$sdk_major" -ge 26 ]] && printf '✅ macOS SDK %s\n' "$sdk_version" || { printf '❌ h3.c 编译需要 macOS SDK 26 或更高版本（当前：%s）\n' "${sdk_version:-无法读取}"; failed=1; }
 check "FFmpeg" command -v ffmpeg
 check "FFprobe" command -v ffprobe
+optional_check "vpipe（可选 Q8 后端）" command -v vpipe
 check "h3.c 可执行文件" test -x "$H3_BINARY"
 optional_check "前台卡顿保护器" test -x "$PROJECT_ROOT/runtime/bin/h3-guardian"
 check "ComfyUI" test -f "$PROJECT_ROOT/runtime/ComfyUI/main.py"

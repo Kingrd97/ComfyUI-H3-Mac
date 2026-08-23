@@ -4,7 +4,7 @@
 
 [![tests](https://github.com/Kingrd97/ComfyUI-H3-Mac/actions/workflows/tests.yml/badge.svg)](https://github.com/Kingrd97/ComfyUI-H3-Mac/actions/workflows/tests.yml)
 
-在 Apple Silicon Mac 上，把官方 [ComfyUI](https://github.com/Comfy-Org/ComfyUI) 可视化工作流与 [antirez/h3.c](https://github.com/antirez/h3.c) 连接起来生成 MiniMax H3 视频。面向第一次接触本地视频模型的用户：双击安装、原生中英文节点、结构化镜头提示词、分镜合并和 MP4 输出。
+在 Apple Silicon Mac 上，把官方 [ComfyUI](https://github.com/Comfy-Org/ComfyUI) 可视化工作流与 MiniMax H3 Metal 后端连接起来。本项目同时支持 [antirez/h3.c](https://github.com/antirez/h3.c) 和可选的 vpipe Q8 FL2VA 后端，并提供双击安装、原生中英文节点、结构化镜头提示词、分镜合并、统一后期配音、可复用任务和 MP4 输出。
 
 > 当前为早期版本。h3.c 本身仍在快速开发；本项目优先保证安装可重复、素材顺序明确、任务可取消、结果和日志可追踪。
 
@@ -14,7 +14,7 @@
 - h3.c 负责 H3 原生权重的 Metal 推理与 MP4 编码。
 - `low / auto / max` 资源档位不会暗中修改 steps、layers 或 reuse；`auto` 通常以前台友好的后台优先级慢跑，原生响应守护器或持续回退指标发现压力时短暂暂停，持续空闲后再解除后台策略。
 - 节点名称、输入项、说明和悬浮提示跟随 ComfyUI 原生界面语言切换中英文。
-- 六栏镜头提示词节点，以及 2–6 个镜头的无损 MP4 分镜合并。
+- 六栏镜头提示词节点，以及 2–8 个镜头的无损 MP4 分镜合并。
 - 每个任务独立保存 `request.json`、进度、日志、失败残片和最终视频。
 - 完全相同且已完成的任务可直接复用，避免误操作后重复跑。
 - 模型权重不进入 Git 仓库，下载时明确展示 MiniMax H3 许可证。
@@ -63,6 +63,12 @@ cd ComfyUI-H3-Mac
 
 ## 第一个工作流
 
+### 推荐的 vpipe Q8 工作流
+
+已经安装 vpipe 和 Q8 FL2VA 模型时，载入 `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json`。每个 `H3 · 使用 vpipe Q8 生成` 节点根据首帧生成一个静音镜头；`H3 · 合并分镜 MP4` 负责拼接；最后由 `H3 · 添加统一固定配音` 根据每行 `秒数|台词`，用同一个 macOS 普通话音色完成整片配音。这样不会再让每个 H3 镜头独立猜测角色音色。
+
+vpipe 节点会优先从 `PATH` 自动查找 `vpipe`。如路径不同，可在 `config.json` 设置 `vpipe_binary`、`vpipe_work_dir`、模型、LoRA 和 low 模式的常驻内存池限制。启用这个可选后端不会改变原有 h3.c 安装路径。
+
 在 ComfyUI 里依次添加：
 
 1. `Load Image`：加载主体照片。
@@ -93,7 +99,9 @@ cd ComfyUI-H3-Mac
 | H3 · 添加音频参考 | 将 ComfyUI AUDIO 保存为 WAV 并加入素材链 |
 | H3 · 添加本地媒体参考 | 添加视频、带音视频、独立音轨或本地图片路径 |
 | H3 · 生成视频（Metal） | 调用 h3.c，输出原生 ComfyUI VIDEO、任务目录和摘要 |
-| H3 · 合并分镜 MP4 | 按顺序拼接 2–6 个已完成任务，不重跑 H3，也不重新压缩视频 |
+| H3 · 使用 vpipe Q8 生成（Metal） | 调用可选 Q8 FL2VA 后端；推荐静音生成，最后统一配音 |
+| H3 · 合并分镜 MP4 | 按顺序拼接 2–8 个已完成任务，不重跑 H3，也不重新压缩视频 |
+| H3 · 添加统一固定配音 | 合并后按时间添加台词，全片始终使用同一个 macOS 音色 |
 
 ## 资源与画质档位
 

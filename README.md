@@ -4,7 +4,7 @@
 
 [![tests](https://github.com/Kingrd97/ComfyUI-H3-Mac/actions/workflows/tests.yml/badge.svg)](https://github.com/Kingrd97/ComfyUI-H3-Mac/actions/workflows/tests.yml)
 
-A beginner-friendly bridge between the official [ComfyUI](https://github.com/Comfy-Org/ComfyUI) visual workflow system and [antirez/h3.c](https://github.com/antirez/h3.c) on Apple Silicon Macs. It provides double-click installation, native English/Chinese nodes, structured shot prompts, storyboard assembly, Metal inference, persistent jobs, and MP4 output.
+A beginner-friendly bridge between the official [ComfyUI](https://github.com/Comfy-Org/ComfyUI) visual workflow system and MiniMax H3 Metal backends on Apple Silicon Macs. It supports [antirez/h3.c](https://github.com/antirez/h3.c) plus an optional vpipe Q8 FL2VA backend, native English/Chinese nodes, structured shot prompts, storyboard assembly, one fixed post-production voice, persistent jobs, and MP4 output.
 
 > This is an early release. h3.c is evolving quickly; this project prioritizes reproducible installation, explicit reference ordering, cancellation, and inspectable jobs.
 
@@ -14,7 +14,7 @@ A beginner-friendly bridge between the official [ComfyUI](https://github.com/Com
 - h3.c for native MiniMax H3 weights, Metal inference, and MP4 encoding.
 - `low / auto / max` resource profiles that keep generation settings explicit; auto normally progresses at background priority, temporarily pauses when the native responsiveness guardian or sustained fallback metrics detect pressure, and removes that policy after a sustained idle period on AC power.
 - English and Simplified Chinese node names, fields, descriptions, and tooltips through ComfyUI's native locale system.
-- A six-field shot prompt builder and lossless 2–6-shot MP4 storyboard assembly.
+- A six-field shot prompt builder and lossless 2–8-shot MP4 storyboard assembly.
 - A job directory containing the request, progress, engine log, partial output, and final video.
 - Reuse of an identical completed request after a restart or accidental rerun.
 - Explicit model-license acknowledgement; model files are never committed to Git.
@@ -63,6 +63,12 @@ For the easiest start, open `Workflow > Browse Templates`, choose `ComfyUI-H3-Ma
 
 ## First workflow
 
+### Recommended vpipe Q8 workflow
+
+Load `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json` when vpipe and the Q8 FL2VA model are already installed. Each `H3 · Generate with vpipe Q8` node renders a silent shot from a first-frame image; `H3 · Assemble storyboard MP4` joins the shots; `H3 · Add one fixed narration voice` then applies every `seconds|dialogue` cue with one macOS Mandarin voice. Keeping speech out of independent H3 shots prevents voice identity from changing between shots.
+
+The vpipe node auto-detects `vpipe` on `PATH`. Override `vpipe_binary`, `vpipe_work_dir`, model, LoRA, and low-power resident-pool limits in `config.json` when needed. This optional backend does not change the pinned h3.c installation path.
+
 Add and connect these nodes in ComfyUI:
 
 1. `Load Image` for the subject.
@@ -93,7 +99,9 @@ For a multi-shot story, use one prompt/generator pair per shot, then connect eac
 | H3 Add Audio Reference | Materialize ComfyUI AUDIO as WAV and append it |
 | H3 Add Local Media Reference | Append local image, audio, video, or video-plus-audio paths |
 | H3 Generate Video (Metal) | Run h3.c and return native ComfyUI VIDEO, job path, and summary |
-| H3 Assemble Storyboard MP4 | Join 2–6 completed jobs in order without re-running H3 or re-encoding video |
+| H3 Generate with vpipe Q8 (Metal) | Run the optional Q8 FL2VA backend; silent output is the recommended fixed-voice workflow |
+| H3 Assemble Storyboard MP4 | Join 2–8 completed jobs in order without re-running H3 or re-encoding video |
+| H3 Add One Fixed Narration Voice | Add timed dialogue to the assembled story with one consistent macOS voice |
 
 ## Resource and quality profiles
 

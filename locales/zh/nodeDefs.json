@@ -79,9 +79,30 @@
       "2": {"name": "运行摘要", "tooltip": "任务 ID、耗时、档位和输出路径。"}
     }
   },
+  "H3GenerateVideoVPipe": {
+    "display_name": "H3 · 使用 vpipe Q8 生成（Metal）",
+    "description": "使用 vpipe 的 Q8 Metal 后端从首帧生成 H3 镜头；推荐静音出片，再统一添加固定配音。",
+    "inputs": {
+      "prompt": {"name": "提示词", "tooltip": "描述角色身份、分时动作、环境、运镜以及需要避免的画面问题。"},
+      "first_frame": {"name": "首帧参考图", "tooltip": "作为 FL2VA 的开场画面和角色身份锚点。"},
+      "width": {"name": "宽度", "tooltip": "输出宽度，使用 32 的倍数。"},
+      "height": {"name": "高度", "tooltip": "输出高度，使用 32 的倍数。"},
+      "frames": {"name": "帧数", "tooltip": "124 帧在 24 FPS 下约为 5.18 秒。"},
+      "steps": {"name": "步数", "tooltip": "Turbo LoRA 的推荐配方为 6 步，更多步数不一定更好。"},
+      "audio_mode": {"name": "声音模式", "tooltip": "推荐静音，合并后统一配音；H3 联合声音可能在不同镜头改变音色。"},
+      "resource_profile": {"name": "资源档位", "tooltip": "low 使用后台任务策略并限制常驻池；max 直接全速运行 vpipe。"},
+      "seed": {"name": "随机种子", "tooltip": "迭代同一镜头时固定种子以便比较。"},
+      "reuse_completed": {"name": "复用相同的已完成任务", "tooltip": "相同任务已有有效成片时跳过推理。"}
+    },
+    "outputs": {
+      "0": {"name": "视频", "tooltip": "生成的 MP4 视频。"},
+      "1": {"name": "任务目录", "tooltip": "连接到“合并分镜 MP4”节点。"},
+      "2": {"name": "运行摘要", "tooltip": "后端、耗时、声音模式和输出路径。"}
+    }
+  },
   "H3AssembleStoryboard": {
     "display_name": "H3 · 合并分镜 MP4",
-    "description": "按顺序无损拼接 2–6 个已完成的 H3 镜头，不再进行模型推理。",
+    "description": "按顺序无损拼接 2–8 个已完成的 H3 镜头，不再进行模型推理。",
     "inputs": {
       "title": {"name": "项目名称", "tooltip": "保存到分镜项目元数据中。"},
       "shot_1_job": {"name": "镜头 1 任务目录", "tooltip": "连接第一个 H3 生成节点的“任务目录”。"},
@@ -89,12 +110,30 @@
       "shot_3_job": {"name": "镜头 3 任务目录（可选）", "tooltip": "第三个已完成镜头。"},
       "shot_4_job": {"name": "镜头 4 任务目录（可选）", "tooltip": "第四个已完成镜头。"},
       "shot_5_job": {"name": "镜头 5 任务目录（可选）", "tooltip": "第五个已完成镜头。"},
-      "shot_6_job": {"name": "镜头 6 任务目录（可选）", "tooltip": "第六个已完成镜头。"}
+      "shot_6_job": {"name": "镜头 6 任务目录（可选）", "tooltip": "第六个已完成镜头。"},
+      "shot_7_job": {"name": "镜头 7 任务目录（可选）", "tooltip": "第七个已完成镜头。"},
+      "shot_8_job": {"name": "镜头 8 任务目录（可选）", "tooltip": "第八个已完成镜头。"}
     },
     "outputs": {
       "0": {"name": "最终视频", "tooltip": "镜头之间硬切的完整 MP4。"},
       "1": {"name": "分镜项目目录", "tooltip": "包含元数据、FFmpeg 日志和最终 MP4。"},
       "2": {"name": "合并摘要", "tooltip": "分镜 ID、复用状态和输出路径。"}
+    }
+  },
+  "H3AddFixedNarration": {
+    "display_name": "H3 · 添加统一固定配音",
+    "description": "分镜合并后，用同一个 macOS 普通话音色替换各镜头不一致的人声。",
+    "inputs": {
+      "storyboard_dir": {"name": "分镜项目目录", "tooltip": "连接“合并分镜 MP4”输出的分镜项目目录。"},
+      "timed_script": {"name": "定时台词", "tooltip": "每行填写“绝对秒数|台词”，秒数对应合并后成片时间。"},
+      "voice": {"name": "音色", "tooltip": "所有台词都复用同一个已安装的 macOS 音色。"},
+      "rate": {"name": "语速", "tooltip": "每分钟词数；180 适合作为自然语速起点。"},
+      "keep_ambience": {"name": "保留消除中央人声后的环境声", "tooltip": "压低居中的 H3 人声，同时尽量保留立体声环境氛围。"}
+    },
+    "outputs": {
+      "0": {"name": "统一配音视频", "tooltip": "已经加入固定音色的完整 MP4。"},
+      "1": {"name": "配音项目目录", "tooltip": "包含分句音频、元数据、日志和结果 MP4。"},
+      "2": {"name": "配音摘要", "tooltip": "配音 ID、复用状态、音色和输出路径。"}
     }
   }
 }

@@ -13,9 +13,13 @@ from .h3_bridge import (
     H3Reference,
     H3Request,
     H3Runner,
+    VPipeRequest,
+    VPipeRunner,
+    add_fixed_narration,
     assemble_storyboard,
     build_shot_prompt,
     load_config,
+    load_vpipe_config,
 )
 from .h3_bridge.media import save_audio, save_image_tensor, validated_media_path
 
@@ -325,6 +329,125 @@ class H3GenerateVideo(io.ComfyNode):
         )
 
 
+class H3GenerateVideoVPipe(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3GenerateVideoVPipe",
+            display_name="H3 · Generate with vpipe Q8 (Metal)",
+            category=CATEGORY,
+            description=(
+                "Generate an FL2VA shot through vpipe's Q8 Metal backend. "
+                "Silent output is recommended so one fixed TTS voice can be added after assembly."
+            ),
+            inputs=[
+                io.String.Input(
+                    "prompt",
+                    display_name="Prompt",
+                    multiline=True,
+                    dynamic_prompts=True,
+                    default="A cinematic natural shot with clear movement and stable identity.",
+                ),
+                io.Image.Input("first_frame", display_name="First-frame reference"),
+                io.Int.Input("width", default=960, min=256, max=1344, step=32, display_name="Width"),
+                io.Int.Input("height", default=544, min=256, max=1344, step=32, display_name="Height"),
+                io.Int.Input("frames", default=124, min=22, max=362, step=17, display_name="Frames"),
+                io.Int.Input("steps", default=6, min=1, max=60, step=1, display_name="Steps"),
+                io.Combo.Input(
+                    "audio_mode",
+                    options=["silent_for_fixed_tts", "h3_joint_audio"],
+                    default="silent_for_fixed_tts",
+                    display_name="Audio mode",
+                ),
+                io.Combo.Input(
+                    "resource_profile",
+                    options=["low", "max"],
+                    default="low",
+                    display_name="Resource profile",
+                ),
+                io.Int.Input(
+                    "seed",
+                    default=42,
+                    min=0,
+                    max=0x7FFFFFFF,
+                    control_after_generate=True,
+                    display_name="Seed",
+                ),
+                io.Boolean.Input(
+                    "reuse_completed",
+                    default=True,
+                    label_on="Reuse",
+                    label_off="Rerun",
+                    display_name="Reuse identical completed job",
+                    advanced=True,
+                ),
+            ],
+            hidden=[io.Hidden.unique_id],
+            outputs=[
+                io.Video.Output("video", display_name="Video"),
+                io.String.Output("job_dir", display_name="Job directory"),
+                io.String.Output("summary", display_name="Run summary"),
+            ],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        prompt,
+        first_frame,
+        width,
+        height,
+        frames,
+        steps,
+        audio_mode,
+        resource_profile,
+        seed,
+        reuse_completed,
+    ):
+        output_root = Path(folder_paths.get_output_directory()).resolve()
+        image_path = save_image_tensor(first_frame, output_root / "h3-assets")
+        request = VPipeRequest(
+            prompt=prompt,
+            first_frame=image_path,
+            width=width,
+            height=height,
+            frames=frames,
+            fps=24,
+            steps=steps,
+            seed=seed,
+            resource_profile=resource_profile,
+            enable_h3_audio=audio_mode == "h3_joint_audio",
+        )
+        progress_bar = comfy.utils.ProgressBar(100, node_id=cls.hidden.unique_id)
+
+        def on_progress(current: int, total: int, _line: str) -> None:
+            progress_bar.update_absolute(current, max(1, total))
+
+        config = load_vpipe_config(Path(__file__).resolve().parent)
+        result = VPipeRunner(config).run(
+            request,
+            output_root=output_root,
+            progress=on_progress,
+            cancelled=comfy.model_management.processing_interrupted,
+            reuse_completed=reuse_completed,
+        )
+        video = InputImpl.VideoFromFile(str(result.output_path))
+        relative = result.output_path.relative_to(output_root)
+        summary = (
+            f"job={result.job_id} | elapsed={result.elapsed_seconds:.1f}s | "
+            f"engine=vpipe-q8 | audio={audio_mode} | output={relative}"
+        )
+        return io.NodeOutput(
+            video,
+            str(result.job_dir),
+            summary,
+            ui=ui.PreviewVideo(
+                [ui.SavedResult(relative.name, str(relative.parent), io.FolderType.output)]
+            ),
+        )
+
+
 class H3AssembleStoryboard(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -332,7 +455,7 @@ class H3AssembleStoryboard(io.ComfyNode):
             node_id="H3AssembleStoryboard",
             display_name="H3 · Assemble storyboard MP4",
             category=CATEGORY,
-            description="Join 2–6 completed H3 shots in order without another generation pass.",
+            description="Join 2–8 completed H3 shots in order without another generation pass.",
             inputs=[
                 io.String.Input("title", display_name="Project title", default="My H3 storyboard"),
                 io.String.Input("shot_1_job", display_name="Shot 1 job directory"),
@@ -363,6 +486,20 @@ class H3AssembleStoryboard(io.ComfyNode):
                     optional=True,
                     advanced=True,
                 ),
+                io.String.Input(
+                    "shot_7_job",
+                    display_name="Shot 7 job directory (optional)",
+                    default="",
+                    optional=True,
+                    advanced=True,
+                ),
+                io.String.Input(
+                    "shot_8_job",
+                    display_name="Shot 8 job directory (optional)",
+                    default="",
+                    optional=True,
+                    advanced=True,
+                ),
             ],
             outputs=[
                 io.Video.Output("video", display_name="Final video"),
@@ -382,6 +519,8 @@ class H3AssembleStoryboard(io.ComfyNode):
         shot_4_job="",
         shot_5_job="",
         shot_6_job="",
+        shot_7_job="",
+        shot_8_job="",
     ):
         config = load_config()
         output_root = Path(folder_paths.get_output_directory()).resolve()
@@ -393,6 +532,8 @@ class H3AssembleStoryboard(io.ComfyNode):
                 shot_4_job,
                 shot_5_job,
                 shot_6_job,
+                shot_7_job,
+                shot_8_job,
             ],
             output_root=output_root,
             jobs_subdir=config.output_subdir,
@@ -414,6 +555,91 @@ class H3AssembleStoryboard(io.ComfyNode):
         )
 
 
+class H3AddFixedNarration(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3AddFixedNarration",
+            display_name="H3 · Add one fixed narration voice",
+            category=CATEGORY,
+            description=(
+                "Replace inconsistent per-shot voices with one macOS Mandarin voice. "
+                "Enter one seconds|dialogue cue per line."
+            ),
+            inputs=[
+                io.String.Input(
+                    "storyboard_dir",
+                    display_name="Storyboard directory",
+                    default="",
+                ),
+                io.String.Input(
+                    "timed_script",
+                    display_name="Timed dialogue",
+                    multiline=True,
+                    default="0.55|大家好，我是土豆。\n5.73|下一站，出发！",
+                ),
+                io.Combo.Input(
+                    "voice",
+                    options=[
+                        "Eddy (中文（中国大陆）)",
+                        "Tingting",
+                        "Flo (中文（中国大陆）)",
+                        "Reed (中文（中国大陆）)",
+                    ],
+                    default="Eddy (中文（中国大陆）)",
+                    display_name="Voice",
+                ),
+                io.Int.Input(
+                    "rate",
+                    default=180,
+                    min=80,
+                    max=320,
+                    step=5,
+                    display_name="Speech rate",
+                ),
+                io.Boolean.Input(
+                    "keep_ambience",
+                    default=True,
+                    label_on="Keep ambience",
+                    label_off="Voice only",
+                    display_name="Keep centre-cancelled ambience",
+                ),
+            ],
+            outputs=[
+                io.Video.Output("video", display_name="Narrated video"),
+                io.String.Output("project_dir", display_name="Narration directory"),
+                io.String.Output("summary", display_name="Narration summary"),
+            ],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def execute(cls, storyboard_dir, timed_script, voice, rate, keep_ambience):
+        output_root = Path(folder_paths.get_output_directory()).resolve()
+        result = add_fixed_narration(
+            storyboard_dir,
+            timed_script=timed_script,
+            voice=voice,
+            rate=rate,
+            keep_centre_cancelled_ambience=keep_ambience,
+            output_root=output_root,
+        )
+        video = InputImpl.VideoFromFile(str(result.output_path))
+        relative = result.output_path.relative_to(output_root)
+        summary = (
+            f"narration={result.narration_id} | reused={str(result.reused).lower()} | "
+            f"voice={voice} | output={relative}"
+        )
+        return io.NodeOutput(
+            video,
+            str(result.project_dir),
+            summary,
+            ui=ui.PreviewVideo(
+                [ui.SavedResult(relative.name, str(relative.parent), io.FolderType.output)]
+            ),
+        )
+
+
 class H3MacExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
@@ -424,7 +650,9 @@ class H3MacExtension(ComfyExtension):
             H3AddAudioReference,
             H3AddMediaFileReference,
             H3GenerateVideo,
+            H3GenerateVideoVPipe,
             H3AssembleStoryboard,
+            H3AddFixedNarration,
         ]
 
 

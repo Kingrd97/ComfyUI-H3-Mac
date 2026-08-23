@@ -6,6 +6,7 @@ COMFY="$PROJECT_ROOT/runtime/ComfyUI"
 PYTHON="$PROJECT_ROOT/runtime/.venv/bin/python"
 PORT="${H3_COMFY_PORT:-8188}"
 DEVICE="${H3_COMFY_DEVICE:-cpu}"
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 
 if [[ ! -x "$PYTHON" || ! -f "$COMFY/main.py" ]]; then
   printf '尚未安装，请先双击 Install.command。\n' >&2

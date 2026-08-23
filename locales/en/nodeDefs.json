@@ -79,9 +79,30 @@
       "2": {"name": "Run summary", "tooltip": "Job ID, elapsed time, profile, and output path."}
     }
   },
+  "H3GenerateVideoVPipe": {
+    "display_name": "H3 · Generate with vpipe Q8 (Metal)",
+    "description": "Generate a first-frame H3 shot with vpipe's Q8 Metal backend; silent output is recommended for fixed post-production voice.",
+    "inputs": {
+      "prompt": {"name": "Prompt", "tooltip": "Describe identity, timed actions, environment, camera, and visual failures to avoid."},
+      "first_frame": {"name": "First-frame reference", "tooltip": "The opening image and identity anchor for FL2VA."},
+      "width": {"name": "Width", "tooltip": "Output width; use a multiple of 32."},
+      "height": {"name": "Height", "tooltip": "Output height; use a multiple of 32."},
+      "frames": {"name": "Frames", "tooltip": "124 frames is about 5.18 seconds at 24 FPS."},
+      "steps": {"name": "Steps", "tooltip": "The Turbo LoRA recipe uses 6 steps; more is not automatically better."},
+      "audio_mode": {"name": "Audio mode", "tooltip": "Use silent for fixed TTS after assembly. Joint H3 audio may change voice between shots."},
+      "resource_profile": {"name": "Resource profile", "tooltip": "Low uses background task policy and bounded resident pools; max runs vpipe directly."},
+      "seed": {"name": "Seed", "tooltip": "Keep a seed fixed while refining a shot."},
+      "reuse_completed": {"name": "Reuse identical completed job", "tooltip": "Skip inference when the same completed job already exists."}
+    },
+    "outputs": {
+      "0": {"name": "Video", "tooltip": "Generated MP4 video."},
+      "1": {"name": "Job directory", "tooltip": "Connect this to Assemble Storyboard MP4."},
+      "2": {"name": "Run summary", "tooltip": "Engine, elapsed time, audio mode, and output path."}
+    }
+  },
   "H3AssembleStoryboard": {
     "display_name": "H3 · Assemble storyboard MP4",
-    "description": "Join 2–6 completed H3 shots in order without another generation pass.",
+    "description": "Join 2–8 completed H3 shots in order without another generation pass.",
     "inputs": {
       "title": {"name": "Project title", "tooltip": "Saved in storyboard metadata."},
       "shot_1_job": {"name": "Shot 1 job directory", "tooltip": "Connect Job directory from the first H3 Generate Video node."},
@@ -89,12 +110,30 @@
       "shot_3_job": {"name": "Shot 3 job directory (optional)", "tooltip": "Third completed shot."},
       "shot_4_job": {"name": "Shot 4 job directory (optional)", "tooltip": "Fourth completed shot."},
       "shot_5_job": {"name": "Shot 5 job directory (optional)", "tooltip": "Fifth completed shot."},
-      "shot_6_job": {"name": "Shot 6 job directory (optional)", "tooltip": "Sixth completed shot."}
+      "shot_6_job": {"name": "Shot 6 job directory (optional)", "tooltip": "Sixth completed shot."},
+      "shot_7_job": {"name": "Shot 7 job directory (optional)", "tooltip": "Seventh completed shot."},
+      "shot_8_job": {"name": "Shot 8 job directory (optional)", "tooltip": "Eighth completed shot."}
     },
     "outputs": {
       "0": {"name": "Final video", "tooltip": "The assembled MP4 with hard cuts between shots."},
       "1": {"name": "Storyboard directory", "tooltip": "Contains metadata, FFmpeg log, and the final MP4."},
       "2": {"name": "Assembly summary", "tooltip": "Storyboard ID, reuse state, and output path."}
+    }
+  },
+  "H3AddFixedNarration": {
+    "display_name": "H3 · Add one fixed narration voice",
+    "description": "Replace inconsistent shot voices with one macOS Mandarin voice after assembly.",
+    "inputs": {
+      "storyboard_dir": {"name": "Storyboard directory", "tooltip": "Connect Storyboard directory from Assemble Storyboard MP4."},
+      "timed_script": {"name": "Timed dialogue", "tooltip": "Write one seconds|dialogue cue per line, using absolute time in the assembled video."},
+      "voice": {"name": "Voice", "tooltip": "One installed macOS voice is reused for every cue."},
+      "rate": {"name": "Speech rate", "tooltip": "Words per minute; 180 is a natural starting point."},
+      "keep_ambience": {"name": "Keep centre-cancelled ambience", "tooltip": "Reduce centred H3 speech while retaining some stereo environmental sound."}
+    },
+    "outputs": {
+      "0": {"name": "Narrated video", "tooltip": "Assembled MP4 with the fixed voice."},
+      "1": {"name": "Narration directory", "tooltip": "Contains cues, metadata, log, and result MP4."},
+      "2": {"name": "Narration summary", "tooltip": "Narration ID, reuse state, voice, and output path."}
     }
   }
 }
