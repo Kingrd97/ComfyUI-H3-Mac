@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -97,24 +98,50 @@ def _has_audio(ffprobe: str, video: Path) -> bool:
     return completed.returncode == 0 and bool(completed.stdout.strip())
 
 
+def _edge_tts_executable() -> str | None:
+    """Find edge-tts in PATH or beside the running virtualenv Python."""
+
+    from_path = shutil.which("edge-tts")
+    if from_path:
+        return from_path
+    # sys.executable may be a symlink into Homebrew's framework; sys.prefix
+    # remains the active virtualenv root.
+    virtualenv_bin = Path(sys.prefix) / "bin" / "edge-tts"
+    if virtualenv_bin.is_file():
+        return str(virtualenv_bin)
+    return None
+
+
 def add_fixed_narration(
     storyboard_dir: str | Path,
     *,
     timed_script: str,
     voice: str,
     rate: int,
+    pitch_hz: int,
     keep_centre_cancelled_ambience: bool,
     output_root: Path,
 ) -> NarrationResult:
     """Replace per-shot voices with one macOS TTS voice over a full storyboard."""
 
     say = shutil.which("say")
+    edge_tts = _edge_tts_executable()
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
-    if not say or not ffmpeg or not ffprobe:
-        raise FileNotFoundError("macOS say, FFmpeg, and FFprobe are required.")
+    if not ffmpeg or not ffprobe:
+        raise FileNotFoundError("FFmpeg and FFprobe are required.")
     if not 80 <= rate <= 320:
         raise ValueError("Speech rate must be between 80 and 320 words per minute.")
+    if not -20 <= pitch_hz <= 20:
+        raise ValueError("Voice pitch must be between -20 and +20 Hz.")
+    use_macos_voice = voice.startswith("macOS:")
+    selected_voice = voice.removeprefix("macOS:")
+    if use_macos_voice and not say:
+        raise FileNotFoundError("macOS say is required for the selected offline voice.")
+    if not use_macos_voice and not edge_tts:
+        raise FileNotFoundError(
+            "edge-tts is required for Neural voices. Re-run Install.command."
+        )
 
     output_root = output_root.resolve()
     source_dir = Path(storyboard_dir).expanduser().resolve()
@@ -137,6 +164,7 @@ def add_fixed_narration(
         "script": timed_script,
         "voice": voice,
         "rate": rate,
+        "pitch_hz": pitch_hz,
         "ambience": keep_centre_cancelled_ambience,
     }
     narration_id = hashlib.sha256(
@@ -150,16 +178,40 @@ def add_fixed_narration(
 
     voice_files: list[Path] = []
     for index, cue in enumerate(cues, start=1):
-        path = project_dir / f"voice-{index:02d}.aiff"
-        completed = subprocess.run(
-            [say, "-v", voice, "-r", str(rate), "-o", str(path), cue.text],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        suffix = ".aiff" if use_macos_voice else ".mp3"
+        path = project_dir / f"voice-{index:02d}{suffix}"
+        if use_macos_voice:
+            command = [
+                str(say),
+                "-v",
+                selected_voice,
+                "-r",
+                str(rate),
+                "-o",
+                str(path),
+                cue.text,
+            ]
+        else:
+            # Edge voices use a percentage rather than words per minute. Treat
+            # 156 WPM as the neutral Mandarin baseline, making 180 WPM +15%.
+            rate_percent = round((rate / 156.0 - 1.0) * 100.0)
+            command = [
+                str(edge_tts),
+                "--voice",
+                selected_voice,
+                "--rate",
+                f"{rate_percent:+d}%",
+                "--pitch",
+                f"{pitch_hz:+d}Hz",
+                "--text",
+                cue.text,
+                "--write-media",
+                str(path),
+            ]
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
         if completed.returncode != 0 or not path.is_file() or path.stat().st_size <= 4096:
             raise RuntimeError(
-                f"macOS could not generate narration cue {index}: {completed.stderr.strip()}"
+                f"TTS could not generate narration cue {index}: {completed.stderr.strip()}"
             )
         voice_files.append(path)
 

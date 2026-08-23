@@ -122,13 +122,14 @@
   },
   "H3AddFixedNarration": {
     "display_name": "H3 · Add one fixed narration voice",
-    "description": "Replace inconsistent shot voices with one macOS Mandarin voice after assembly.",
+    "description": "Discard inconsistent shot voices and add one fixed Mandarin voice after assembly; Neural voices require internet.",
     "inputs": {
       "storyboard_dir": {"name": "Storyboard directory", "tooltip": "Connect Storyboard directory from Assemble Storyboard MP4."},
       "timed_script": {"name": "Timed dialogue", "tooltip": "Write one seconds|dialogue cue per line, using absolute time in the assembled video."},
-      "voice": {"name": "Voice", "tooltip": "One installed macOS voice is reused for every cue."},
+      "voice": {"name": "Voice", "tooltip": "Yunxi Neural is the recommended natural young male voice; macOS Tingting is the offline fallback."},
       "rate": {"name": "Speech rate", "tooltip": "Words per minute; 180 is a natural starting point."},
-      "keep_ambience": {"name": "Keep centre-cancelled ambience", "tooltip": "Reduce centred H3 speech while retaining some stereo environmental sound."}
+      "pitch_hz": {"name": "Pitch adjustment (Hz)", "tooltip": "+4 Hz gives Tudou a slightly lighter voice without a cartoon effect."},
+      "keep_ambience": {"name": "Keep centre-cancelled ambience", "tooltip": "Off is safest and fully removes H3 speech. Enable only when the source has clean separable stereo ambience."}
     },
     "outputs": {
       "0": {"name": "Narrated video", "tooltip": "Assembled MP4 with the fixed voice."},

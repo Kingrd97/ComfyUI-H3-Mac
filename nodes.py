@@ -563,8 +563,8 @@ class H3AddFixedNarration(io.ComfyNode):
             display_name="H3 · Add one fixed narration voice",
             category=CATEGORY,
             description=(
-                "Replace inconsistent per-shot voices with one macOS Mandarin voice. "
-                "Enter one seconds|dialogue cue per line."
+                "Discard per-shot voices and add one consistent Mandarin voice after assembly. "
+                "Enter one seconds|dialogue cue per line. Neural voices require internet."
             ),
             inputs=[
                 io.String.Input(
@@ -581,12 +581,13 @@ class H3AddFixedNarration(io.ComfyNode):
                 io.Combo.Input(
                     "voice",
                     options=[
-                        "Eddy (中文（中国大陆）)",
-                        "Tingting",
-                        "Flo (中文（中国大陆）)",
-                        "Reed (中文（中国大陆）)",
+                        "zh-CN-YunxiNeural",
+                        "zh-CN-XiaoxiaoNeural",
+                        "zh-CN-YunyangNeural",
+                        "zh-CN-XiaoyiNeural",
+                        "macOS:Tingting",
                     ],
-                    default="Eddy (中文（中国大陆）)",
+                    default="zh-CN-YunxiNeural",
                     display_name="Voice",
                 ),
                 io.Int.Input(
@@ -597,9 +598,17 @@ class H3AddFixedNarration(io.ComfyNode):
                     step=5,
                     display_name="Speech rate",
                 ),
+                io.Int.Input(
+                    "pitch_hz",
+                    default=4,
+                    min=-20,
+                    max=20,
+                    step=1,
+                    display_name="Pitch adjustment (Hz)",
+                ),
                 io.Boolean.Input(
                     "keep_ambience",
-                    default=True,
+                    default=False,
                     label_on="Keep ambience",
                     label_off="Voice only",
                     display_name="Keep centre-cancelled ambience",
@@ -614,13 +623,16 @@ class H3AddFixedNarration(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, storyboard_dir, timed_script, voice, rate, keep_ambience):
+    def execute(
+        cls, storyboard_dir, timed_script, voice, rate, pitch_hz, keep_ambience
+    ):
         output_root = Path(folder_paths.get_output_directory()).resolve()
         result = add_fixed_narration(
             storyboard_dir,
             timed_script=timed_script,
             voice=voice,
             rate=rate,
+            pitch_hz=pitch_hz,
             keep_centre_cancelled_ambience=keep_ambience,
             output_root=output_root,
         )

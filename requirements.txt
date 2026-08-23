@@ -1,3 +1,4 @@
 # The node uses packages already provided by ComfyUI.
 # Model-download tooling has a separate runtime/model-tools-venv so it cannot
 # change ComfyUI's transitive Python dependencies.
+edge-tts==7.2.8

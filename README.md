@@ -65,7 +65,7 @@ For the easiest start, open `Workflow > Browse Templates`, choose `ComfyUI-H3-Ma
 
 ### Recommended vpipe Q8 workflow
 
-Load `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json` when vpipe and the Q8 FL2VA model are already installed. Each `H3 · Generate with vpipe Q8` node renders a silent shot from a first-frame image; `H3 · Assemble storyboard MP4` joins the shots; `H3 · Add one fixed narration voice` then applies every `seconds|dialogue` cue with one macOS Mandarin voice. Keeping speech out of independent H3 shots prevents voice identity from changing between shots.
+Load `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json` when vpipe and the Q8 FL2VA model are already installed. Each `H3 · Generate with vpipe Q8` node renders a silent shot from a first-frame image; `H3 · Assemble storyboard MP4` joins the shots; `H3 · Add one fixed narration voice` then applies every `seconds|dialogue` cue with one voice. The recommended `zh-CN-YunxiNeural` voice is substantially more natural but requires internet; `macOS:Tingting` is the offline fallback. `Keep ambience` defaults off so the original H3 voice is completely discarded.
 
 The vpipe node auto-detects `vpipe` on `PATH`. Override `vpipe_binary`, `vpipe_work_dir`, model, LoRA, and low-power resident-pool limits in `config.json` when needed. This optional backend does not change the pinned h3.c installation path.
 

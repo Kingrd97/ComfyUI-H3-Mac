@@ -65,7 +65,7 @@ cd ComfyUI-H3-Mac
 
 ### 推荐的 vpipe Q8 工作流
 
-已经安装 vpipe 和 Q8 FL2VA 模型时，载入 `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json`。每个 `H3 · 使用 vpipe Q8 生成` 节点根据首帧生成一个静音镜头；`H3 · 合并分镜 MP4` 负责拼接；最后由 `H3 · 添加统一固定配音` 根据每行 `秒数|台词`，用同一个 macOS 普通话音色完成整片配音。这样不会再让每个 H3 镜头独立猜测角色音色。
+已经安装 vpipe 和 Q8 FL2VA 模型时，载入 `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json`。每个 `H3 · 使用 vpipe Q8 生成` 节点根据首帧生成一个静音镜头；`H3 · 合并分镜 MP4` 负责拼接；最后由 `H3 · 添加统一固定配音` 根据每行 `秒数|台词`，用同一个音色完成整片配音。推荐的 `zh-CN-YunxiNeural` 更自然但需要联网，`macOS:Tingting` 可离线使用。“保留环境声”默认关闭，确保 H3 原人声被彻底丢弃。
 
 vpipe 节点会优先从 `PATH` 自动查找 `vpipe`。如路径不同，可在 `config.json` 设置 `vpipe_binary`、`vpipe_work_dir`、模型、LoRA 和 low 模式的常驻内存池限制。启用这个可选后端不会改变原有 h3.c 安装路径。
 

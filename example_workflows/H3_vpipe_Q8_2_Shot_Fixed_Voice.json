@@ -154,7 +154,7 @@
         {"name": "Narration summary", "type": "STRING", "links": null, "slot_index": 2}
       ],
       "properties": {"Node name for S&R": "H3AddFixedNarration"},
-      "widgets_values": ["", "0.55|大家好，我是土豆。\n5.73|第二个镜头，我们继续出发！", "Eddy (中文（中国大陆）)", 180, true]
+      "widgets_values": ["", "0.55|大家好，我是土豆。\n5.73|第二个镜头，我们继续出发！", "zh-CN-YunxiNeural", 180, 4, false]
     }
   ],
   "links": [

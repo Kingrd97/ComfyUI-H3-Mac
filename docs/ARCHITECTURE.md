@@ -28,7 +28,7 @@ ComfyUI native VIDEO output and preview
 Storyboard assembler ── validated paths ── FFmpeg stream-copy MP4
    │
    ▼
-Fixed narration ── one macOS voice + timed cues ── final AAC MP4
+Fixed narration ── one Neural or offline macOS voice + timed cues ── final AAC MP4
 ```
 
 ## Boundaries

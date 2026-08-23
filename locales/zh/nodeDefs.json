@@ -122,13 +122,14 @@
   },
   "H3AddFixedNarration": {
     "display_name": "H3 · 添加统一固定配音",
-    "description": "分镜合并后，用同一个 macOS 普通话音色替换各镜头不一致的人声。",
+    "description": "合并后彻底丢弃各镜头不一致的人声，再添加同一个普通话音色；神经音色需要联网。",
     "inputs": {
       "storyboard_dir": {"name": "分镜项目目录", "tooltip": "连接“合并分镜 MP4”输出的分镜项目目录。"},
       "timed_script": {"name": "定时台词", "tooltip": "每行填写“绝对秒数|台词”，秒数对应合并后成片时间。"},
-      "voice": {"name": "音色", "tooltip": "所有台词都复用同一个已安装的 macOS 音色。"},
+      "voice": {"name": "音色", "tooltip": "推荐自然年轻男声 Yunxi Neural；macOS Tingting 是离线备用音色。"},
       "rate": {"name": "语速", "tooltip": "每分钟词数；180 适合作为自然语速起点。"},
-      "keep_ambience": {"name": "保留消除中央人声后的环境声", "tooltip": "压低居中的 H3 人声，同时尽量保留立体声环境氛围。"}
+      "pitch_hz": {"name": "音高调整（Hz）", "tooltip": "+4 Hz 会让土豆的声音稍轻快，但不会过度卡通化。"},
+      "keep_ambience": {"name": "保留消除中央人声后的环境声", "tooltip": "默认关闭，可彻底移除 H3 原声；只有原素材具备可分离的干净立体声环境时才开启。"}
     },
     "outputs": {
       "0": {"name": "统一配音视频", "tooltip": "已经加入固定音色的完整 MP4。"},
