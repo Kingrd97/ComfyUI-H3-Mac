@@ -463,7 +463,7 @@ class H3AssembleStoryboard(io.ComfyNode):
             node_id="H3AssembleStoryboard",
             display_name="H3 · Assemble storyboard MP4",
             category=CATEGORY,
-            description="Join 2–8 completed H3 shots in order without another generation pass.",
+            description="Join 2–12 completed H3 shots in order without another generation pass.",
             inputs=[
                 io.String.Input("title", display_name="Project title", default="My H3 storyboard"),
                 io.String.Input("shot_1_job", display_name="Shot 1 job directory"),
@@ -508,6 +508,34 @@ class H3AssembleStoryboard(io.ComfyNode):
                     optional=True,
                     advanced=True,
                 ),
+                io.String.Input(
+                    "shot_9_job",
+                    display_name="Shot 9 job directory (optional)",
+                    default="",
+                    optional=True,
+                    advanced=True,
+                ),
+                io.String.Input(
+                    "shot_10_job",
+                    display_name="Shot 10 job directory (optional)",
+                    default="",
+                    optional=True,
+                    advanced=True,
+                ),
+                io.String.Input(
+                    "shot_11_job",
+                    display_name="Shot 11 job directory (optional)",
+                    default="",
+                    optional=True,
+                    advanced=True,
+                ),
+                io.String.Input(
+                    "shot_12_job",
+                    display_name="Shot 12 job directory (optional)",
+                    default="",
+                    optional=True,
+                    advanced=True,
+                ),
             ],
             outputs=[
                 io.Video.Output("video", display_name="Final video"),
@@ -529,6 +557,10 @@ class H3AssembleStoryboard(io.ComfyNode):
         shot_6_job="",
         shot_7_job="",
         shot_8_job="",
+        shot_9_job="",
+        shot_10_job="",
+        shot_11_job="",
+        shot_12_job="",
     ):
         config = load_config()
         output_root = Path(folder_paths.get_output_directory()).resolve()
@@ -542,6 +574,10 @@ class H3AssembleStoryboard(io.ComfyNode):
                 shot_6_job,
                 shot_7_job,
                 shot_8_job,
+                shot_9_job,
+                shot_10_job,
+                shot_11_job,
+                shot_12_job,
             ],
             output_root=output_root,
             jobs_subdir=config.output_subdir,
