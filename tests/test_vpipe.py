@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from h3_bridge.vpipe import VPipeConfig, VPipeRequest, VPipeRunner, _pipeline
+from h3_bridge.vpipe import (
+    VPipeConfig,
+    VPipeRequest,
+    VPipeRunner,
+    _pipeline,
+    _progress_from_line,
+)
 
 
 def make_fake_vpipe(tmp_path: Path) -> tuple[Path, Path]:
@@ -17,6 +23,9 @@ def make_fake_vpipe(tmp_path: Path) -> tuple[Path, Path]:
         "import json, pathlib, sys\n"
         "p = pathlib.Path(sys.argv[sys.argv.index('--launch') + 1])\n"
         "graph = json.loads(p.read_text())\n"
+        "print(\"[INFO] ImageResampleStage('first-frame'): ready\", flush=True)\n"
+        "print(\"[NORMAL] [h3-dit] first forward at 123 rows\", flush=True)\n"
+        "print(\"[INFO] GenerateVideoStage('generate-video'): emitted MiniMax-H3 latents #1\", flush=True)\n"
         "save = next(x for x in graph['stages'] if x['id'] == 'save-video')\n"
         "pathlib.Path(save['config']['output_url']).write_bytes(b'fake-vpipe-mp4')\n",
         encoding="utf-8",
@@ -44,13 +53,13 @@ def test_vpipe_runner_materializes_silent_pipeline_and_reuses_result(tmp_path: P
         progress=lambda current, total, _line: updates.append((current, total)),
     )
     assert first.output_path.read_bytes() == b"fake-vpipe-mp4"
-    assert updates == [(1, 100), (100, 100)]
+    assert updates == [(1, 100), (5, 100), (25, 100), (75, 100), (100, 100)]
     graph = json.loads((first.job_dir / "pipeline.vpipeline").read_text())
     stage_ids = {stage["id"] for stage in graph["stages"]}
     assert "audio-vae-decode" not in stage_ids
     save = next(stage for stage in graph["stages"] if stage["id"] == "save-video")
     assert save["config"]["enable_audio"] is False
-    assert save["iports"][1]["src"] == ""
+    assert save["iports"] == [{"src": "rgb-to-video", "oport": 0}]
 
     second = runner.run(request, output_root=tmp_path / "output")
     assert second.reused is True
@@ -69,7 +78,32 @@ def test_vpipe_joint_audio_pipeline_has_audio_decoder(tmp_path: Path):
     assert "audio-vae-decode" in stage_ids
     save = next(stage for stage in graph["stages"] if stage["id"] == "save-video")
     assert save["config"]["enable_audio"] is True
-    assert save["iports"][1]["src"] == "audio-vae-decode"
+    assert save["iports"] == [
+        {"src": "rgb-to-video", "oport": 0},
+        {"src": "audio-vae-decode", "oport": 0},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            "[INFO] ImageResampleStage('first-frame'): -> 640x384, fit=1, metal ok",
+            (5, "Preparing reference frame"),
+        ),
+        (
+            "[NORMAL] [h3-dit] first forward at 123 rows",
+            (25, "Generating video frames"),
+        ),
+        (
+            "[INFO] GenerateVideoStage('generate-video'): emitted MiniMax-H3 latents #1",
+            (75, "Video latents complete"),
+        ),
+        ("unrelated log line", None),
+    ],
+)
+def test_vpipe_progress_markers(line: str, expected: tuple[int, str] | None):
+    assert _progress_from_line(line) == expected
 
 
 def test_vpipe_highres_profile_selects_matching_adapter_and_shift(tmp_path: Path):
@@ -98,6 +132,7 @@ def test_vpipe_highres_profile_selects_matching_adapter_and_shift(tmp_path: Path
     [
         ({"width": 650}, "multiples of 32"),
         ({"frames": 10}, "between 22 and 362"),
+        ({"steps": 1}, "between 2 and 60"),
         ({"fps": 30}, "24 fps"),
         ({"resource_profile": "auto"}, "low or max"),
         ({"adapter_profile": "unknown"}, "Adapter profile"),

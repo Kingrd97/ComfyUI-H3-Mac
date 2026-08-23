@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import queue
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -96,7 +98,6 @@ def load_vpipe_config(project_root: Path) -> VPipeConfig:
 
 
 def _pipeline(config: VPipeConfig, request: VPipeRequest, output: Path) -> dict:
-    audio_source = "audio-vae-decode" if request.enable_h3_audio else ""
     use_768p = request.adapter_profile == "turbo_highres_4step"
     lora = config.lora_768p if use_768p else config.lora
     video_shift = 6.0 if use_768p else 12.0
@@ -210,6 +211,9 @@ def _pipeline(config: VPipeConfig, request: VPipeRequest, output: Path) -> dict:
                 "config": {},
             }
         )
+    save_iports = [{"src": "rgb-to-video", "oport": 0}]
+    if request.enable_h3_audio:
+        save_iports.append({"src": "audio-vae-decode", "oport": 0})
     stages.extend(
         [
             {
@@ -221,10 +225,7 @@ def _pipeline(config: VPipeConfig, request: VPipeRequest, output: Path) -> dict:
             {
                 "id": "save-video",
                 "type": "save-video",
-                "iports": [
-                    {"src": "rgb-to-video", "oport": 0},
-                    {"src": audio_source, "oport": 0},
-                ],
+                "iports": save_iports,
                 "config": {
                     "output_url": str(output),
                     "enable_video": True,
@@ -234,6 +235,27 @@ def _pipeline(config: VPipeConfig, request: VPipeRequest, output: Path) -> dict:
         ]
     )
     return {"id": "comfyui-h3-vpipe-shot", "stages": stages, "subpipelines": []}
+
+
+def _progress_from_line(line: str) -> tuple[int, str] | None:
+    """Translate stable vpipe stage messages into conservative UI progress."""
+
+    markers = (
+        ("ImageResampleStage('first-frame')", 5, "Preparing reference frame"),
+        ("VaeEncodeStage('vae-encode-first')", 10, "Encoding reference frame"),
+        ("DiffusionConditionerStage('diffusion-conditioner')", 15, "Encoding prompt"),
+        ("MiniMax-H3 (video", 20, "Preparing H3 denoiser"),
+        ("[h3-dit] first forward", 25, "Generating video frames"),
+        ("emitted MiniMax-H3 latents", 75, "Video latents complete"),
+        ("VaeDecodeStage('vae-decode')", 82, "Decoding video frames"),
+        ("decoded clip", 88, "Decoding audio"),
+        ("RGBToVideoStage", 92, "Encoding video"),
+        ("SaveVideoStage", 95, "Saving MP4"),
+    )
+    for marker, current, label in markers:
+        if marker in line:
+            return current, label
+    return None
 
 
 class VPipeRunner:
@@ -259,8 +281,8 @@ class VPipeRunner:
             raise ValueError("vpipe H3 frame count must be between 22 and 362.")
         if request.fps != 24:
             raise ValueError("MiniMax H3 uses 24 fps in this integration.")
-        if not 1 <= request.steps <= 60:
-            raise ValueError("Steps must be between 1 and 60.")
+        if not 2 <= request.steps <= 60:
+            raise ValueError("Steps must be between 2 and 60.")
         if request.resource_profile not in {"low", "max"}:
             raise ValueError("Resource profile must be low or max.")
         if request.adapter_profile not in {"turbo_544p", "turbo_highres_4step"}:
@@ -337,17 +359,53 @@ class VPipeRunner:
             process = subprocess.Popen(
                 command,
                 cwd=self.config.work_dir,
-                stdout=log,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                bufsize=1,
                 start_new_session=True,
             )
+            output_lines: queue.SimpleQueue[str] = queue.SimpleQueue()
+            output_finished = threading.Event()
+
+            def collect_output() -> None:
+                assert process.stdout is not None
+                try:
+                    for line in process.stdout:
+                        output_lines.put(line)
+                finally:
+                    process.stdout.close()
+                    output_finished.set()
+
+            reader = threading.Thread(target=collect_output, daemon=True)
+            reader.start()
+            reported_progress = 1
+
+            def drain_output() -> None:
+                nonlocal reported_progress
+                while True:
+                    try:
+                        line = output_lines.get_nowait()
+                    except queue.Empty:
+                        break
+                    log.write(line)
+                    update = _progress_from_line(line)
+                    if progress and update and update[0] > reported_progress:
+                        reported_progress = update[0]
+                        progress(update[0], 100, update[1])
+                log.flush()
+
             while process.poll() is None:
+                drain_output()
                 if cancelled and cancelled():
                     process.terminate()
                     process.wait(timeout=10)
+                    reader.join(timeout=2)
+                    drain_output()
                     raise RuntimeError("vpipe generation cancelled.")
                 time.sleep(0.25)
+            reader.join(timeout=2)
+            drain_output()
             returncode = process.returncode
         elapsed = time.monotonic() - started
         if returncode != 0:
