@@ -72,6 +72,27 @@ def test_vpipe_joint_audio_pipeline_has_audio_decoder(tmp_path: Path):
     assert save["iports"][1]["src"] == "audio-vae-decode"
 
 
+def test_vpipe_highres_profile_selects_matching_adapter_and_shift(tmp_path: Path):
+    binary, work_dir = make_fake_vpipe(tmp_path)
+    image = tmp_path / "cat.png"
+    image.write_bytes(b"image")
+    config = VPipeConfig(binary=binary, work_dir=work_dir)
+    request = VPipeRequest(
+        prompt="cat",
+        first_frame=image,
+        width=1152,
+        height=640,
+        steps=4,
+        adapter_profile="turbo_highres_4step",
+    )
+    graph = _pipeline(config, request, tmp_path / "out.mp4")
+    model_config = next(
+        stage for stage in graph["stages"] if stage["id"] == "minimax-h3-model-config"
+    )
+    assert model_config["config"]["lora"] == config.lora_768p
+    assert model_config["config"]["video_shift"] == 6.0
+
+
 @pytest.mark.parametrize(
     ("request_changes", "message"),
     [
@@ -79,6 +100,17 @@ def test_vpipe_joint_audio_pipeline_has_audio_decoder(tmp_path: Path):
         ({"frames": 10}, "between 22 and 362"),
         ({"fps": 30}, "24 fps"),
         ({"resource_profile": "auto"}, "low or max"),
+        ({"adapter_profile": "unknown"}, "Adapter profile"),
+        ({"adapter_profile": "turbo_highres_4step"}, "starts at 1152x640"),
+        (
+            {
+                "adapter_profile": "turbo_highres_4step",
+                "width": 1152,
+                "height": 640,
+                "steps": 6,
+            },
+            "exactly 4 steps",
+        ),
     ],
 )
 def test_vpipe_runner_validates_geometry_and_profile(

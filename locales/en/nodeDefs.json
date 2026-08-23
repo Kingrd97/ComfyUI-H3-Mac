@@ -92,7 +92,8 @@
       "audio_mode": {"name": "Audio mode", "tooltip": "Use silent for fixed TTS after assembly. Joint H3 audio may change voice between shots."},
       "resource_profile": {"name": "Resource profile", "tooltip": "Low uses background task policy and bounded resident pools; max runs vpipe directly."},
       "seed": {"name": "Seed", "tooltip": "Keep a seed fixed while refining a shot."},
-      "reuse_completed": {"name": "Reuse identical completed job", "tooltip": "Skip inference when the same completed job already exists."}
+      "reuse_completed": {"name": "Reuse identical completed job", "tooltip": "Skip inference when the same completed job already exists."},
+      "adapter_profile": {"name": "Turbo resolution adapter", "tooltip": "Use turbo_highres_4step for 1152×640 or larger with exactly 4 steps; turbo_544p is the regular profile."}
     },
     "outputs": {
       "0": {"name": "Video", "tooltip": "Generated MP4 video."},

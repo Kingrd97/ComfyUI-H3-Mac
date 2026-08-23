@@ -67,6 +67,8 @@ For the easiest start, open `Workflow > Browse Templates`, choose `ComfyUI-H3-Ma
 
 Load `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json` when vpipe and the Q8 FL2VA model are already installed. Each `H3 · Generate with vpipe Q8` node renders a silent shot from a first-frame image; `H3 · Assemble storyboard MP4` joins the shots; `H3 · Add one fixed narration voice` then applies every `seconds|dialogue` cue with one voice. The recommended `zh-CN-YunxiNeural` voice is substantially more natural but requires internet; `macOS:Tingting` is the offline fallback. `Keep ambience` defaults off so the original H3 voice is completely discarded.
 
+For a complete story, load `example_workflows/H3_Tudou_Yunnan_8_Shot_Story_1152x640.json`. It maps eight references to eight 1152×640 `turbo_highres_4step` silent shots, assembles them, then adds one consistent inner-monologue track. The cat does not speak on screen, so false lip sync is avoided; the example contains no BGM.
+
 The vpipe node auto-detects `vpipe` on `PATH`. Override `vpipe_binary`, `vpipe_work_dir`, model, LoRA, and low-power resident-pool limits in `config.json` when needed. This optional backend does not change the pinned h3.c installation path.
 
 Add and connect these nodes in ComfyUI:

@@ -21,6 +21,7 @@ class VPipeConfig:
     work_dir: Path
     model: str = "local/MiniMax-H3-FL2VA-8bit"
     lora: str = "larryvrh/MiniMax-H3-Turbo-Lora-v4-600-ema"
+    lora_768p: str = "lightx2v/Minimax-h3-Turbo-4step-768p"
     output_subdir: str = "h3-jobs"
     low_memory_cap_mb: int = 12288
     low_wired_pool_mb: int = 8192
@@ -38,6 +39,7 @@ class VPipeRequest:
     seed: int = 42
     resource_profile: str = "low"
     enable_h3_audio: bool = False
+    adapter_profile: str = "turbo_544p"
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,11 @@ def load_vpipe_config(project_root: Path) -> VPipeConfig:
                 "vpipe_lora", "larryvrh/MiniMax-H3-Turbo-Lora-v4-600-ema"
             )
         ),
+        lora_768p=str(
+            raw.get(
+                "vpipe_lora_768p", "lightx2v/Minimax-h3-Turbo-4step-768p"
+            )
+        ),
         output_subdir=output_subdir,
         low_memory_cap_mb=int(raw.get("vpipe_low_memory_cap_mb", 12288)),
         low_wired_pool_mb=int(raw.get("vpipe_low_wired_pool_mb", 8192)),
@@ -90,6 +97,9 @@ def load_vpipe_config(project_root: Path) -> VPipeConfig:
 
 def _pipeline(config: VPipeConfig, request: VPipeRequest, output: Path) -> dict:
     audio_source = "audio-vae-decode" if request.enable_h3_audio else ""
+    use_768p = request.adapter_profile == "turbo_highres_4step"
+    lora = config.lora_768p if use_768p else config.lora
+    video_shift = 6.0 if use_768p else 12.0
     stages: list[dict] = [
         {
             "id": "model-select",
@@ -144,11 +154,11 @@ def _pipeline(config: VPipeConfig, request: VPipeRequest, output: Path) -> dict:
             "type": "minimax-h3-model-config",
             "iports": [],
             "config": {
-                "video_shift": 12.0,
+                "video_shift": video_shift,
                 "audio_shift": 3.0,
                 "condition_timestep": 1.0,
                 "audio_seconds": 0.0,
-                "lora": config.lora,
+                "lora": lora,
                 "lora_scale": 1.0,
             },
         },
@@ -253,6 +263,13 @@ class VPipeRunner:
             raise ValueError("Steps must be between 1 and 60.")
         if request.resource_profile not in {"low", "max"}:
             raise ValueError("Resource profile must be low or max.")
+        if request.adapter_profile not in {"turbo_544p", "turbo_highres_4step"}:
+            raise ValueError("Adapter profile must be turbo_544p or turbo_highres_4step.")
+        if request.adapter_profile == "turbo_highres_4step":
+            if request.width * request.height < 1152 * 640:
+                raise ValueError("The high-resolution Turbo adapter starts at 1152x640.")
+            if request.steps != 4:
+                raise ValueError("The high-resolution Turbo adapter requires exactly 4 steps.")
 
     def _job_id(self, request: VPipeRequest) -> str:
         image_stat = request.first_frame.stat()
@@ -262,6 +279,7 @@ class VPipeRunner:
         payload["first_frame_mtime_ns"] = image_stat.st_mtime_ns
         payload["model"] = self.config.model
         payload["lora"] = self.config.lora
+        payload["lora_768p"] = self.config.lora_768p
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         return "vpipe-" + hashlib.sha256(encoded).hexdigest()[:20]
 

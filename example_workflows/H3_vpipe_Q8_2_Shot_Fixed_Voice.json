@@ -73,7 +73,7 @@
         {"name": "Run summary", "type": "STRING", "links": null, "slot_index": 2}
       ],
       "properties": {"Node name for S&R": "H3GenerateVideoVPipe"},
-      "widgets_values": ["", 960, 544, 124, 6, "silent_for_fixed_tts", "low", 101, "fixed", true]
+      "widgets_values": ["", 960, 544, 124, 6, "silent_for_fixed_tts", "low", 101, "fixed", true, "turbo_544p"]
     },
     {
       "id": 5,
@@ -115,7 +115,7 @@
         {"name": "Run summary", "type": "STRING", "links": null, "slot_index": 2}
       ],
       "properties": {"Node name for S&R": "H3GenerateVideoVPipe"},
-      "widgets_values": ["", 960, 544, 124, 6, "silent_for_fixed_tts", "low", 202, "fixed", true]
+      "widgets_values": ["", 960, 544, 124, 6, "silent_for_fixed_tts", "low", 202, "fixed", true, "turbo_544p"]
     },
     {
       "id": 7,

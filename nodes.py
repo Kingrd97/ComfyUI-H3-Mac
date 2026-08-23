@@ -381,6 +381,12 @@ class H3GenerateVideoVPipe(io.ComfyNode):
                     display_name="Reuse identical completed job",
                     advanced=True,
                 ),
+                io.Combo.Input(
+                    "adapter_profile",
+                    options=["turbo_544p", "turbo_highres_4step"],
+                    default="turbo_544p",
+                    display_name="Turbo resolution adapter",
+                ),
             ],
             hidden=[io.Hidden.unique_id],
             outputs=[
@@ -404,6 +410,7 @@ class H3GenerateVideoVPipe(io.ComfyNode):
         resource_profile,
         seed,
         reuse_completed,
+        adapter_profile,
     ):
         output_root = Path(folder_paths.get_output_directory()).resolve()
         image_path = save_image_tensor(first_frame, output_root / "h3-assets")
@@ -418,6 +425,7 @@ class H3GenerateVideoVPipe(io.ComfyNode):
             seed=seed,
             resource_profile=resource_profile,
             enable_h3_audio=audio_mode == "h3_joint_audio",
+            adapter_profile=adapter_profile,
         )
         progress_bar = comfy.utils.ProgressBar(100, node_id=cls.hidden.unique_id)
 

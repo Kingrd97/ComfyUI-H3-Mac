@@ -8,6 +8,7 @@
   "vpipe_work_dir": "~/workspace/github/vpipe-work",
   "vpipe_model": "local/MiniMax-H3-FL2VA-8bit",
   "vpipe_lora": "larryvrh/MiniMax-H3-Turbo-Lora-v4-600-ema",
+  "vpipe_lora_768p": "lightx2v/Minimax-h3-Turbo-4step-768p",
   "vpipe_low_memory_cap_mb": 12288,
   "vpipe_low_wired_pool_mb": 8192,
   "auto_ssd_streaming_ram_gib": 64,
