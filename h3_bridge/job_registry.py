@@ -95,7 +95,7 @@ def register_starting_job(
     *,
     controller_pid: int,
     controller_start_signature: str,
-    engine_profile: str = "auto",
+    engine_profile: str = "low",
 ) -> JobRegistration:
     """Atomically publish a path before launch, without yet making it signalable."""
 

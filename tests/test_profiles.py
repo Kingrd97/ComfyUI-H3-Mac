@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from h3_bridge.models import H3Request
 from h3_bridge.profiles import QUALITY_PROFILES, process_prefix, should_stream
+
+
+def test_generation_defaults_to_background_friendly_low_profile():
+    assert H3Request(prompt="cat").resource_profile == "low"
 
 
 def test_quality_presets_keep_resource_and_quality_separate():

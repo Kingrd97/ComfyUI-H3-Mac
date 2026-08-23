@@ -33,7 +33,7 @@ class H3Request:
     seconds: float = 5.0
     fps: int = 24
     quality_profile: QualityProfile = "quality"
-    resource_profile: ResourceProfile = "auto"
+    resource_profile: ResourceProfile = "low"
     seed: int = -1
     references: tuple[H3Reference, ...] = field(default_factory=tuple)
     first_frame: Path | None = None

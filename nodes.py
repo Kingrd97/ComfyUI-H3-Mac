@@ -237,7 +237,7 @@ class H3GenerateVideo(io.ComfyNode):
                 io.Combo.Input(
                     "resource_profile",
                     options=["low", "auto", "max"],
-                    default="auto",
+                    default="low",
                     display_name="Resource profile",
                 ),
                 io.Int.Input(

@@ -14,7 +14,7 @@
       "outputs": [],
       "properties": {},
       "widgets_values": [
-        "# H3 two-shot storyboard / H3 双镜头分镜\n\n1. Choose the subject image below. / 在下方选择主体图片。\n2. Fill the six fields on each shot card. / 分别填写每张镜头卡的六个栏目。\n3. Keep both generators at the same width, height, and quality. / 两个生成节点保持相同宽高和画质。\n4. Start with preview + low, then use quality + auto. / 先用 preview + low，确认后改 quality + auto。\n5. The final node joins the completed shots into one MP4. / 最后一个节点会把已完成镜头合并为一个 MP4。"
+        "# H3 two-shot storyboard / H3 双镜头分镜\n\n1. Choose the subject image below. / 在下方选择主体图片。\n2. Fill the six fields on each shot card. / 分别填写每张镜头卡的六个栏目。\n3. Keep both generators at the same width, height, and quality. / 两个生成节点保持相同宽高和画质。\n4. Keep low for background-friendly rendering; switch to max only when the Mac is idle. / 默认保持 low 以友好后台运行；只在 Mac 空闲时改为 max。\n5. The final node joins the completed shots into one MP4. / 最后一个节点会把已完成镜头合并为一个 MP4。"
       ]
     },
     {
