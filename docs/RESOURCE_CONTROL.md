@@ -31,7 +31,7 @@ Darwin `taskpolicy` is also best-effort. A failed background/foreground policy c
 
 macOS does not provide a public, universal API for the actual frame-drop rate of every foreground application. The native display signal and CPU/WindowServer/GPU metrics are therefore responsiveness evidence and proxies, not proof that a particular app dropped a frame. The protection is best-effort rather than hard real-time. In particular, `SIGSTOP` cannot retract a Metal command buffer already committed to the GPU, so some GPU work may finish after the pause decision, and stopping the process does not release its loaded weights from unified memory. If the helper is missing or exits, auto fails over to the metric path rather than requiring extra permissions.
 
-The engine is wrapped with `caffeinate -s`: it prevents system idle sleep only while running on AC power. On battery, normal macOS idle-sleep policy remains effective. If ComfyUI crashes, the next `Start.command` cleans an H3 child only when both engine and controller birth fingerprints prove that the exact controller has exited; legacy or ambiguous records are left untouched. This startup recovery reduces orphan risk but is not an on-disk denoising checkpoint.
+The engine is wrapped with `caffeinate -s`: it prevents system idle sleep only while running on AC power. On battery, normal macOS idle-sleep policy remains effective. vpipe is owned by a launchd-kept worker rather than by ComfyUI, so a UI restart does not kill it. A restarted worker reattaches only to a process group with the exact recorded birth fingerprint. Stale jobs are never terminated automatically at ComfyUI startup; use the explicit verified-orphan action in `H3 Control.command` when cleanup is wanted. This is process supervision, not an on-disk denoising checkpoint.
 
 ## Control a running job
 
@@ -46,7 +46,7 @@ Double-click `H3 Control.command`, or run:
 ./H3\ Control.command max
 ```
 
-Each job stores live state in `process.json`, user intent in `control.json`, and denoising progress in `progress.json`.
+Each registered h3.c or vpipe job stores live state in `process.json` and user intent in `control.json`; engine/UI progress is stored in `progress.json` or `vpipe-status.json`.
 
 Changing policy during a run changes pause state and Darwin scheduling only. SSD streaming is fixed when the engine process starts and cannot be toggled halfway through denoising; start a new shot run with another resource profile to change the memory strategy.
 

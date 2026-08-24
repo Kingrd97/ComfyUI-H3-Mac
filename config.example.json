@@ -11,6 +11,8 @@
   "vpipe_lora_768p": "lightx2v/Minimax-h3-Turbo-4step-768p",
   "vpipe_low_memory_cap_mb": 12288,
   "vpipe_low_wired_pool_mb": 8192,
+  "vpipe_worker_enabled": true,
+  "vpipe_worker_heartbeat_timeout_seconds": 15,
   "auto_ssd_streaming_ram_gib": 64,
   "auto_idle_seconds": 300,
   "auto_poll_seconds": 0.5,

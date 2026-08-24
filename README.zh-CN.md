@@ -16,6 +16,7 @@
 - 节点名称、输入项、说明和悬浮提示跟随 ComfyUI 原生界面语言切换中英文。
 - 六栏镜头提示词节点，以及 2–8 个镜头的无损 MP4 分镜合并。
 - 每个任务独立保存 `request.json`、进度、日志、失败残片和最终视频。
+- 使用用户级 launchd 同时保活 ComfyUI 和持久化 vpipe 队列 worker；vpipe 镜头由 worker 持有，关闭或重启 ComfyUI 不会杀死 Metal 推理进程。
 - 完全相同且已完成的任务可直接复用，避免误操作后重复跑。
 - 模型权重不进入 Git 仓库，下载时明确展示 MiniMax H3 许可证。
 
@@ -37,7 +38,7 @@ macOS 没有可通用于任意前台 App 的真实掉帧计数接口；守护器
 1. 下载或克隆本仓库。
 2. 双击 `Install.command`。macOS 首次拦截时，用右键 → 打开；不要关闭系统安全保护。
 3. 双击 `Download Model.command`，新手选择 `1) Ref2VA`。
-4. 双击 `Start.command`，等待浏览器打开 `http://127.0.0.1:8188`。在 `Comfy > Locale > Language` 里选择“中文”。
+4. 安装器会启动并保活 ComfyUI 与 vpipe worker。双击 `Start.command` 可检查服务并打开 `http://127.0.0.1:8188`。在 `Comfy > Locale > Language` 里选择“中文”。
 
 命令行方式：
 
@@ -55,7 +56,7 @@ cd ComfyUI-H3-Mac
 
 配置 schema v2 使用保守的一次性升级策略：先把旧配置备份为 `config.json.v1-backup`；只有完全匹配旧版随附 `background` 默认值的配置才迁移到新的 `adaptive` 行为，用户改过的行为或阈值都会保留。
 
-`Start.command` 会故意让 ComfyUI 控制层的 PyTorch 跑在 CPU。这**不会禁用 H3 的 Metal 推理**：H3 节点会启动单独编译的 h3.c Metal 进程。这个默认值能避免 ComfyUI 额外占用统一内存，也避免 PyTorch 设备探测失败。如果你同时使用必须依赖 MPS 的其他 ComfyUI 节点，可用 `H3_COMFY_DEVICE=auto ./Start.command` 启动。
+`Start.command` 只会安装/检查 launchd 服务并打开界面，不会重复启动已存在的服务器。launchd 中的 ComfyUI 控制层故意让 PyTorch 跑在 CPU；这**不会禁用 Metal 推理**，H3 节点会调用独立的 Metal 引擎。前台诊断时可使用 `H3_FOREGROUND=1 H3_COMFY_DEVICE=auto ./Start.command`。
 
 锁定的官方 ComfyUI 前端已经原生支持中文。第一次打开时会参考浏览器语言，以后可以从 `Comfy > Locale > Language` 切换；H3 节点会跟随设置变化，不依赖第三方汉化补丁。
 
@@ -67,7 +68,7 @@ cd ComfyUI-H3-Mac
 
 已经安装 vpipe 和 Q8 FL2VA 模型时，载入 `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json`。每个 `H3 · 使用 vpipe Q8 生成` 节点根据首帧生成一个静音镜头；`H3 · 合并分镜 MP4` 负责拼接；最后由 `H3 · 添加统一固定配音` 根据每行 `秒数|台词`，用同一个音色完成整片配音。推荐的 `zh-CN-YunxiNeural` 更自然但需要联网，`macOS:Tingting` 可离线使用。“保留环境声”默认关闭，确保 H3 原人声被彻底丢弃。
 
-vpipe 节点会优先从 `PATH` 自动查找 `vpipe`。如路径不同，可在 `config.json` 设置 `vpipe_binary`、`vpipe_work_dir`、模型、LoRA 和 low 模式的常驻内存池限制。启用这个可选后端不会改变原有 h3.c 安装路径。
+vpipe 节点会优先从 `PATH` 自动查找 `vpipe`，并把持久化任务票据提交给 launchd worker，而不是把推理做成 ComfyUI 的一次性子进程。如路径不同，可在 `config.json` 设置 `vpipe_binary`、`vpipe_work_dir`、模型、LoRA 和 low/auto 模式的常驻内存池限制。启用这个可选后端不会改变原有 h3.c 安装路径。
 
 在 ComfyUI 里依次添加：
 
@@ -128,12 +129,13 @@ vpipe 节点会优先从 `PATH` 自动查找 `vpipe`。如路径不同，可在 
 output/h3-jobs/<job-id>/
 ├── request.json
 ├── progress.json
+├── vpipe-status.json  # vpipe 任务
 ├── engine.log
 ├── result.partial.mp4
 └── result.mp4
 ```
 
-已完成的相同请求可直接复用。h3.c 目前没有导出单个去噪步状态，因此无法从第 12/20 步精确续跑；取消时会保留日志和残片，但未封装完成的 MP4 可能无法播放。
+已完成的相同请求可直接复用。vpipe worker 可以跨 ComfyUI 重启继续持有任务；worker 自身退出时 launchd 会重启它，并重新接管出生指纹完全一致的存活进程组。两种引擎目前都没有导出去噪步状态，因此真正退出的引擎进程仍不能从第 12/20 步精确续跑；取消时会保留日志和残片，但未封装完成的 MP4 可能无法播放。
 
 运行中可双击 `H3 Control.command` 查看状态、暂停、继续，或切换 `low / auto / max` 调度策略。命令行也可以直接使用：
 
@@ -145,7 +147,14 @@ output/h3-jobs/<job-id>/
 ./H3\ Control.command max
 ```
 
-“暂停/继续”使用 macOS `SIGSTOP/SIGCONT`：已加载权重和进程状态仍留在内存，继续时不会从头加载或重做已完成的 CPU 侧进度。暂停不会释放统一内存，也无法撤回已经提交给 GPU 的 Metal command buffer。它不是写入磁盘的模型检查点，因此退出 ComfyUI、杀掉进程、关机或重启后不能从同一步继续。需要把内存腾给其他应用时，应取消任务；已完成的单镜头仍会保留并可复用。详细说明见[资源调度与暂停](docs/RESOURCE_CONTROL_zh.md)。
+这套控制同时适用于已注册的 h3.c 和 vpipe 任务。“暂停/继续”使用 macOS `SIGSTOP/SIGCONT`：已加载权重和进程状态仍留在内存，继续时不会从头加载或重做已完成的 CPU 侧进度。暂停不会释放统一内存，也无法撤回已经提交给 GPU 的 Metal command buffer。它不是写入磁盘的模型检查点，因此引擎进程退出或机器重启后不能从同一步继续。白天推荐 `resource=auto`，后台推进并在持续检测到前台卡顿时暂时暂停。详细说明见[资源调度与暂停](docs/RESOURCE_CONTROL_zh.md)。
+
+服务保活与推理暂停是两套独立控制：
+
+```bash
+./Service\ Control.command status
+./Service\ Control.command restart --worker-only
+```
 
 合并后的项目保存在 `output/h3-storyboards/<storyboard-id>/`。后面的镜头失败时，前面完成的单镜头任务仍可复用。
 

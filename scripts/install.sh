@@ -97,11 +97,14 @@ info "创建或安全迁移本地配置"
   "$PROJECT_ROOT/config.json" \
   "$PROJECT_ROOT/config.example.json"
 
-chmod +x "$PROJECT_ROOT"/*.command "$PROJECT_ROOT"/scripts/*.sh
+chmod +x "$PROJECT_ROOT"/*.command "$PROJECT_ROOT"/scripts/*.sh "$PROJECT_ROOT"/scripts/*.py
+
+info "安装并启动 ComfyUI / vpipe launchd 后台服务"
+"$VENV/bin/python" "$PROJECT_ROOT/scripts/launchd.py" install
 
 info "安装完成"
 printf '%s\n' \
   "1. 双击 Download Model.command 下载模型" \
-  "2. 双击 Start.command 启动 ComfyUI" \
+  "2. ComfyUI 与 vpipe worker 已由 launchd 自动保活；Start.command 可检查并打开界面" \
   "3. 浏览器打开 http://127.0.0.1:8188" \
   "4. 运行中可双击 H3 Control.command 暂停、继续或切换资源策略"

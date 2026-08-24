@@ -11,7 +11,7 @@ from typing import Iterator
 
 
 _SCHEMA_VERSION = 1
-_JOB_ID_RE = re.compile(r"[0-9a-f]{20}")
+_JOB_ID_RE = re.compile(r"(?:[0-9a-f]{20}|vpipe-[0-9a-f]{20})")
 _TOKEN_RE = re.compile(r"[0-9a-f]{32}")
 _MARKER_NAME = ".h3-job-registry.json"
 

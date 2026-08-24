@@ -65,6 +65,8 @@ check "h3.c 可执行文件" test -x "$H3_BINARY"
 optional_check "前台卡顿保护器" test -x "$PROJECT_ROOT/runtime/bin/h3-guardian"
 check "ComfyUI" test -f "$PROJECT_ROOT/runtime/ComfyUI/main.py"
 check "Python 虚拟环境" test -x "$PROJECT_ROOT/runtime/.venv/bin/python"
+check "ComfyUI launchd 保活服务" launchctl print "gui/$(id -u)/com.kingrd97.comfyui-h3-mac"
+check "vpipe launchd 保活 worker" launchctl print "gui/$(id -u)/com.kingrd97.comfyui-h3-mac.vpipe-worker"
 check "模型工具虚拟环境" test -x "$MODEL_VENV/bin/python"
 if [[ -x "$MODEL_VENV/bin/python" ]]; then
   installed_hub_version="$("$MODEL_VENV/bin/python" -c 'import huggingface_hub; print(huggingface_hub.__version__)' 2>/dev/null || true)"

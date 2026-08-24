@@ -72,6 +72,15 @@ def test_every_shell_script_parses():
         subprocess.run(["bash", "-n", str(script)], check=True)
 
 
+def test_start_and_install_enable_launchd_supervision():
+    start = (ROOT / "Start.command").read_text(encoding="utf-8")
+    install = (ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
+
+    assert "scripts/launchd.py" in start
+    assert "scripts/launchd.py" in install
+    assert (ROOT / "Service Control.command").is_file()
+
+
 def test_guardian_rebinds_display_link_after_screen_reconfiguration():
     source = (ROOT / "native" / "H3Guardian.swift").read_text(encoding="utf-8")
 

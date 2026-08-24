@@ -16,6 +16,7 @@ A beginner-friendly bridge between the official [ComfyUI](https://github.com/Com
 - English and Simplified Chinese node names, fields, descriptions, and tooltips through ComfyUI's native locale system.
 - A six-field shot prompt builder and lossless 2–8-shot MP4 storyboard assembly.
 - A job directory containing the request, progress, engine log, partial output, and final video.
+- Per-user launchd services keep both ComfyUI and a durable vpipe queue worker alive. A vpipe shot is owned by the worker, so closing or restarting ComfyUI does not kill the Metal process.
 - Reuse of an identical completed request after a restart or accidental rerun.
 - Explicit model-license acknowledgement; model files are never committed to Git.
 
@@ -37,7 +38,7 @@ The 64 GiB boundary is a safety heuristic, not an h3.c requirement. The pinned e
 1. Download or clone this repository.
 2. Double-click `Install.command`. If Gatekeeper blocks it, right-click → Open; do not disable macOS security protections.
 3. Double-click `Download Model.command`; beginners should choose `1) Ref2VA`.
-4. Double-click `Start.command` and wait for `http://127.0.0.1:8188` to open. Select `Comfy > Locale > Language` to switch between English and Chinese.
+4. The installer starts persistent ComfyUI and vpipe launchd services. Double-click `Start.command` to verify them and open `http://127.0.0.1:8188`. Select `Comfy > Locale > Language` to switch between English and Chinese.
 
 Command-line equivalent:
 
@@ -55,7 +56,7 @@ Model downloading uses a separate pinned Python environment, so its Hugging Face
 
 Configuration schema v2 has a conservative one-time upgrade path. A legacy configuration is first backed up as `config.json.v1-backup`. Only a file that still exactly matches the former shipped `background` defaults is moved to the new `adaptive` behavior; customized behavior or thresholds are preserved.
 
-`Start.command` intentionally runs the ComfyUI control plane with PyTorch on CPU. This does **not** disable Metal generation: the H3 node starts the separately compiled h3.c binary, which still performs inference with Metal. This default avoids unnecessary unified-memory use and PyTorch device-detection failures. If you also use other ComfyUI nodes that require MPS, start with `H3_COMFY_DEVICE=auto ./Start.command`.
+`Start.command` installs/checks the launchd services and opens the UI; it does not duplicate an already running server. The launchd program intentionally runs the ComfyUI control plane with PyTorch on CPU. This does **not** disable Metal generation: the H3 node starts a separate Metal engine. This default avoids unnecessary unified-memory use and PyTorch device-detection failures. For foreground diagnostics use `H3_FOREGROUND=1 H3_COMFY_DEVICE=auto ./Start.command`.
 
 The pinned official ComfyUI frontend has native localization. Browser language is used on first launch; `Comfy > Locale > Language` changes it later. H3 node translations follow that setting without a third-party translation patch.
 
@@ -67,7 +68,7 @@ For the easiest start, open `Workflow > Browse Templates`, choose `ComfyUI-H3-Ma
 
 Load `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json` when vpipe and the Q8 FL2VA model are already installed. Each `H3 · Generate with vpipe Q8` node renders a silent shot from a first-frame image; `H3 · Assemble storyboard MP4` joins the shots; `H3 · Add one fixed narration voice` then applies every `seconds|dialogue` cue with one voice. The recommended `zh-CN-YunxiNeural` voice is substantially more natural but requires internet; `macOS:Tingting` is the offline fallback. `Keep ambience` defaults off so the original H3 voice is completely discarded.
 
-The vpipe node auto-detects `vpipe` on `PATH`. Override `vpipe_binary`, `vpipe_work_dir`, model, LoRA, and low-power resident-pool limits in `config.json` when needed. This optional backend does not change the pinned h3.c installation path.
+The vpipe node auto-detects `vpipe` on `PATH`. It submits durable tickets to a launchd-owned worker instead of making vpipe a disposable ComfyUI child. Override `vpipe_binary`, `vpipe_work_dir`, model, LoRA, and low-power resident-pool limits in `config.json` when needed. This optional backend does not change the pinned h3.c installation path.
 
 Add and connect these nodes in ComfyUI:
 
@@ -128,12 +129,13 @@ Each request receives a deterministic job ID:
 output/h3-jobs/<job-id>/
 ├── request.json
 ├── progress.json
+├── vpipe-status.json  # vpipe jobs
 ├── engine.log
 ├── result.partial.mp4
 └── result.mp4
 ```
 
-An identical completed request can be reused. h3.c does not currently export denoising-step state, so a run cannot resume exactly from step 12/20. Cancellation preserves logs and the partial file, although an unfinished MP4 may not be playable.
+An identical completed request can be reused. The vpipe worker survives a ComfyUI restart, and launchd restarts the worker if the controller itself exits; it reattaches to an exact surviving process group. Neither engine currently exports denoising-step state, so an engine process that actually dies cannot resume exactly from step 12/20. Cancellation preserves logs and the partial file, although an unfinished MP4 may not be playable.
 
 Double-click `H3 Control.command` to inspect, pause, resume, or change the scheduling policy of active jobs. The same controls are available from a shell:
 
@@ -145,7 +147,14 @@ Double-click `H3 Control.command` to inspect, pause, resume, or change the sched
 ./H3\ Control.command max
 ```
 
-Pause/resume uses macOS `SIGSTOP/SIGCONT`: loaded weights and process state remain in RAM, so resuming does not reload or repeat completed CPU-side progress. This does not free unified memory, cannot revoke a Metal command buffer already committed to the GPU, is not a serialized checkpoint, and cannot survive process exit or reboot. See [resource control](docs/RESOURCE_CONTROL.md).
+These controls apply to registered h3.c **and vpipe** jobs. Pause/resume uses macOS `SIGSTOP/SIGCONT`: loaded weights and process state remain in RAM, so resuming does not reload or repeat completed CPU-side progress. This does not free unified memory, cannot revoke a Metal command buffer already committed to the GPU, is not a serialized checkpoint, and cannot survive engine exit or reboot. Use `resource=auto` for background progress with temporary pause when sustained foreground jank is detected. See [resource control](docs/RESOURCE_CONTROL.md).
+
+Service supervision is separate from inference control:
+
+```bash
+./Service\ Control.command status
+./Service\ Control.command restart --worker-only
+```
 
 Assembled projects are stored in `output/h3-storyboards/<storyboard-id>/`. If a later shot fails, completed shot jobs remain reusable.
 

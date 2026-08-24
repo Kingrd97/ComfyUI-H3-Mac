@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
 import queue
@@ -21,12 +22,15 @@ CancelCallback = Callable[[], bool]
 class VPipeConfig:
     binary: Path
     work_dir: Path
+    project_root: Path | None = None
     model: str = "local/MiniMax-H3-FL2VA-8bit"
     lora: str = "larryvrh/MiniMax-H3-Turbo-Lora-v4-600-ema"
     lora_768p: str = "lightx2v/Minimax-h3-Turbo-4step-768p"
     output_subdir: str = "h3-jobs"
     low_memory_cap_mb: int = 12288
     low_wired_pool_mb: int = 8192
+    worker_enabled: bool = False
+    worker_heartbeat_timeout_seconds: float = 15.0
 
 
 @dataclass(frozen=True)
@@ -80,6 +84,7 @@ def load_vpipe_config(project_root: Path) -> VPipeConfig:
     return VPipeConfig(
         binary=binary,
         work_dir=work_dir,
+        project_root=project_root.resolve(),
         model=str(raw.get("vpipe_model", "local/MiniMax-H3-FL2VA-8bit")),
         lora=str(
             raw.get(
@@ -94,7 +99,54 @@ def load_vpipe_config(project_root: Path) -> VPipeConfig:
         output_subdir=output_subdir,
         low_memory_cap_mb=int(raw.get("vpipe_low_memory_cap_mb", 12288)),
         low_wired_pool_mb=int(raw.get("vpipe_low_wired_pool_mb", 8192)),
+        worker_enabled=bool(raw.get("vpipe_worker_enabled", True)),
+        worker_heartbeat_timeout_seconds=float(
+            raw.get("vpipe_worker_heartbeat_timeout_seconds", 15.0)
+        ),
     )
+
+
+def build_vpipe_command(
+    config: VPipeConfig,
+    resource_profile: str,
+    pipeline_path: Path,
+) -> list[str]:
+    """Build the engine command used by both direct tests and the worker."""
+
+    command = [str(config.binary)]
+    if resource_profile in {"low", "auto"}:
+        taskpolicy = shutil.which("taskpolicy")
+        if taskpolicy:
+            command = [taskpolicy, "-b", *command]
+        command.extend(
+            [
+                "--memory-cap-mb",
+                str(config.low_memory_cap_mb),
+                "--wired-pool-mb",
+                str(config.low_wired_pool_mb),
+            ]
+        )
+    command.extend(["--launch", str(pipeline_path)])
+    return command
+
+
+def _read_json(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _atomic_json(path: Path, payload: dict[str, object]) -> None:
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _pipeline(config: VPipeConfig, request: VPipeRequest, output: Path) -> dict:
@@ -283,8 +335,8 @@ class VPipeRunner:
             raise ValueError("MiniMax H3 uses 24 fps in this integration.")
         if not 2 <= request.steps <= 60:
             raise ValueError("Steps must be between 2 and 60.")
-        if request.resource_profile not in {"low", "max"}:
-            raise ValueError("Resource profile must be low or max.")
+        if request.resource_profile not in {"low", "auto", "max"}:
+            raise ValueError("Resource profile must be low, auto, or max.")
         if request.adapter_profile not in {"turbo_544p", "turbo_highres_4step"}:
             raise ValueError("Adapter profile must be turbo_544p or turbo_highres_4step.")
         if request.adapter_profile == "turbo_highres_4step":
@@ -323,10 +375,23 @@ class VPipeRunner:
             return VPipeResult(job_id, output_path, job_dir, 0.0, True)
 
         partial = job_dir / "result.partial.mp4"
-        partial.unlink(missing_ok=True)
         pipeline_path = job_dir / "pipeline.vpipeline"
         request_path = job_dir / "request.json"
-        log_path = job_dir / "engine.log"
+        if self.config.worker_enabled and _read_json(job_dir / "vpipe-status.json").get(
+            "state"
+        ) in {"queued", "running", "paused"}:
+            return self._run_via_worker(
+                request,
+                job_id=job_id,
+                job_dir=job_dir,
+                output_path=output_path,
+                pipeline_path=pipeline_path,
+                progress=progress,
+                cancelled=cancelled,
+                submit=False,
+            )
+
+        partial.unlink(missing_ok=True)
         request_path.write_text(
             json.dumps(asdict(request), ensure_ascii=False, indent=2, default=str),
             encoding="utf-8",
@@ -336,20 +401,155 @@ class VPipeRunner:
             encoding="utf-8",
         )
 
-        command = [str(self.config.binary)]
-        if request.resource_profile == "low":
-            taskpolicy = shutil.which("taskpolicy")
-            if taskpolicy:
-                command = [taskpolicy, "-b", *command]
-            command.extend(
-                [
-                    "--memory-cap-mb",
-                    str(self.config.low_memory_cap_mb),
-                    "--wired-pool-mb",
-                    str(self.config.low_wired_pool_mb),
-                ]
+        if self.config.worker_enabled:
+            return self._run_via_worker(
+                request,
+                job_id=job_id,
+                job_dir=job_dir,
+                output_path=output_path,
+                pipeline_path=pipeline_path,
+                progress=progress,
+                cancelled=cancelled,
+                submit=True,
             )
-        command.extend(["--launch", str(pipeline_path)])
+
+        return self._run_direct(
+            request,
+            job_id=job_id,
+            job_dir=job_dir,
+            output_path=output_path,
+            partial=partial,
+            pipeline_path=pipeline_path,
+            progress=progress,
+            cancelled=cancelled,
+        )
+
+    def _run_via_worker(
+        self,
+        request: VPipeRequest,
+        *,
+        job_id: str,
+        job_dir: Path,
+        output_path: Path,
+        pipeline_path: Path,
+        progress: ProgressCallback | None,
+        cancelled: CancelCallback | None,
+        submit: bool,
+    ) -> VPipeResult:
+        project_root = (
+            self.config.project_root or Path(__file__).resolve().parents[1]
+        ).resolve()
+        worker_root = project_root / "runtime" / "vpipe-worker"
+        heartbeat_path = worker_root / "heartbeat.json"
+        heartbeat = _read_json(heartbeat_path)
+        try:
+            heartbeat_age = time.time() - float(heartbeat.get("updated_at", 0.0))
+        except (TypeError, ValueError):
+            heartbeat_age = float("inf")
+        if heartbeat_age > self.config.worker_heartbeat_timeout_seconds:
+            raise RuntimeError(
+                "The launchd vpipe worker is not ready. Run "
+                "'./Service Control.command install' and retry."
+            )
+
+        status_path = job_dir / "vpipe-status.json"
+        cancel_path = job_dir / "cancel.request"
+        queue_root = worker_root / "queue"
+        queue_root.mkdir(parents=True, exist_ok=True)
+        submit_lock_path = job_dir / "submit.lock"
+        started = time.monotonic()
+        if submit:
+            cancel_path.unlink(missing_ok=True)
+            with submit_lock_path.open("a+", encoding="utf-8") as submit_lock:
+                fcntl.flock(submit_lock.fileno(), fcntl.LOCK_EX)
+                current = _read_json(status_path)
+                if current.get("state") not in {"queued", "running", "paused"}:
+                    _atomic_json(
+                        status_path,
+                        {
+                            "schema_version": 1,
+                            "job_id": job_id,
+                            "state": "queued",
+                            "progress": 1,
+                            "message": "Queued for launchd vpipe worker",
+                            "resource_profile": request.resource_profile,
+                            "created_at": time.time(),
+                            "updated_at": time.time(),
+                        },
+                    )
+                    pipeline_digest = hashlib.sha256(pipeline_path.read_bytes()).hexdigest()
+                    _atomic_json(
+                        queue_root / f"{job_id}.json",
+                        {
+                            "schema_version": 1,
+                            "job_id": job_id,
+                            "job_dir": str(job_dir.resolve()),
+                            "pipeline_sha256": pipeline_digest,
+                            "resource_profile": request.resource_profile,
+                            "created_at": time.time(),
+                        },
+                    )
+        if progress:
+            progress(1, 100, "Queued for launchd vpipe worker")
+
+        reported = 1
+        missing_worker_since: float | None = None
+        while True:
+            current = _read_json(status_path)
+            state = str(current.get("state", "queued"))
+            try:
+                current_progress = int(current.get("progress", 1))
+            except (TypeError, ValueError):
+                current_progress = 1
+            message = str(current.get("message", state))
+            if progress and current_progress > reported:
+                reported = current_progress
+                progress(min(100, current_progress), 100, message)
+            if state == "completed" and output_path.is_file() and output_path.stat().st_size > 0:
+                elapsed = float(current.get("elapsed_seconds", time.monotonic() - started))
+                if progress and reported < 100:
+                    progress(100, 100, "vpipe complete")
+                return VPipeResult(job_id, output_path, job_dir, elapsed, False)
+            if state in {"failed", "cancelled"}:
+                error = str(current.get("error", "vpipe worker did not complete the job"))
+                exception = InterruptedError if state == "cancelled" else RuntimeError
+                raise exception(error)
+            if cancelled and cancelled():
+                cancel_path.touch(exist_ok=True)
+
+            heartbeat = _read_json(heartbeat_path)
+            try:
+                age = time.time() - float(heartbeat.get("updated_at", 0.0))
+            except (TypeError, ValueError):
+                age = float("inf")
+            if age > self.config.worker_heartbeat_timeout_seconds:
+                if missing_worker_since is None:
+                    missing_worker_since = time.monotonic()
+                elif time.monotonic() - missing_worker_since > 60.0:
+                    raise RuntimeError(
+                        "The launchd vpipe worker has been unavailable for over 60 seconds. "
+                        f"Job state remains in {job_dir}."
+                    )
+            else:
+                missing_worker_since = None
+            time.sleep(0.25)
+
+    def _run_direct(
+        self,
+        request: VPipeRequest,
+        *,
+        job_id: str,
+        job_dir: Path,
+        output_path: Path,
+        partial: Path,
+        pipeline_path: Path,
+        progress: ProgressCallback | None,
+        cancelled: CancelCallback | None,
+    ) -> VPipeResult:
+        log_path = job_dir / "engine.log"
+        command = build_vpipe_command(
+            self.config, request.resource_profile, pipeline_path
+        )
         if progress:
             progress(1, 100, "Starting vpipe")
         started = time.monotonic()

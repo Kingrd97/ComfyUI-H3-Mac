@@ -31,7 +31,7 @@ macOS `taskpolicy` 同样是 best-effort。后台/前台策略设置失败时不
 
 macOS 没有公开、通用的接口可以读取任意前台 App 的真实掉帧率。因此，原生显示信号和 CPU/WindowServer/GPU 指标属于响应证据和代理信号，不能证明某个 App 确实掉了一帧。这套保护是 best-effort，不是硬实时保证。特别是 `SIGSTOP` 无法撤回已经提交给 GPU 的 Metal command buffer，暂停决策之后可能仍有一小段 GPU 工作完成；暂停也不会释放模型占用的统一内存。如果 helper 缺失或退出，`auto` 会无权限地退回指标路径，而不是要求用户开放额外权限。
 
-引擎使用 `caffeinate -s` 包装：只有接电时才阻止系统因空闲睡眠，电池供电时仍遵循 macOS 正常睡眠策略。如果 ComfyUI 崩溃，下次运行 `Start.command` 只会在引擎和控制器出生指纹都完整、且能证明原控制器已经退出时清理对应 H3；旧版或身份不明确的记录不会自动终止。这是启动恢复保护，不是可落盘的去噪检查点。
+引擎使用 `caffeinate -s` 包装：只有接电时才阻止系统因空闲睡眠，电池供电时仍遵循 macOS 正常睡眠策略。vpipe 由 launchd 保活的 worker 持有，而不是 ComfyUI 的一次性子进程，因此重启界面不会杀死推理；worker 重启时只会接管出生指纹完全一致的进程组。ComfyUI 启动时不再自动终止孤儿任务；确实需要清理时，使用 `H3 Control.command` 中显式的“清理已确认孤儿进程”。这是进程保活，不是可落盘的去噪检查点。
 
 ## 控制正在运行的任务
 
@@ -46,7 +46,7 @@ macOS 没有公开、通用的接口可以读取任意前台 App 的真实掉帧
 ./H3\ Control.command max      # 强制满速并继续
 ```
 
-状态保存在每个任务目录的 `process.json`，控制意图保存在 `control.json`，进度仍在 `progress.json`。
+已注册的 h3.c 与 vpipe 任务都把状态保存在 `process.json`、控制意图保存在 `control.json`；引擎/界面进度保存在 `progress.json` 或 `vpipe-status.json`。
 
 运行中切换模式只改变暂停与 macOS 调度策略。是否使用 SSD streaming 在进程启动时已经确定，不能在同一次去噪中途切换；要改变内存策略，需要以新资源档位重新启动该镜头。
 

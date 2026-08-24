@@ -352,7 +352,7 @@ class H3GenerateVideoVPipe(io.ComfyNode):
                 io.Int.Input("width", default=960, min=256, max=1344, step=32, display_name="Width"),
                 io.Int.Input("height", default=544, min=256, max=1344, step=32, display_name="Height"),
                 io.Int.Input("frames", default=124, min=22, max=362, step=17, display_name="Frames"),
-                io.Int.Input("steps", default=6, min=1, max=60, step=1, display_name="Steps"),
+                io.Int.Input("steps", default=6, min=2, max=60, step=1, display_name="Steps"),
                 io.Combo.Input(
                     "audio_mode",
                     options=["silent_for_fixed_tts", "h3_joint_audio"],
@@ -361,7 +361,7 @@ class H3GenerateVideoVPipe(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "resource_profile",
-                    options=["low", "max"],
+                    options=["low", "auto", "max"],
                     default="low",
                     display_name="Resource profile",
                 ),

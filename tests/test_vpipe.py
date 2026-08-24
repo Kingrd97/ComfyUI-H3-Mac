@@ -134,7 +134,7 @@ def test_vpipe_highres_profile_selects_matching_adapter_and_shift(tmp_path: Path
         ({"frames": 10}, "between 22 and 362"),
         ({"steps": 1}, "between 2 and 60"),
         ({"fps": 30}, "24 fps"),
-        ({"resource_profile": "auto"}, "low or max"),
+        ({"resource_profile": "eco"}, "low, auto, or max"),
         ({"adapter_profile": "unknown"}, "Adapter profile"),
         ({"adapter_profile": "turbo_highres_4step"}, "starts at 1152x640"),
         (
