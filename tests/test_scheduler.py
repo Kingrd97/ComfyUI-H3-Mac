@@ -206,11 +206,13 @@ def test_native_guardian_restarts_after_helper_exit(tmp_path: Path):
 def test_resource_health_parses_partial_public_tool_output():
     outputs = {
         "/usr/bin/memory_pressure": (
-            "The system has 1 pages.\nSystem-wide memory free percentage: 7%\n"
+            "The system has 25769803776 (1572864 pages with a page size of 16384).\n"
+            "System-wide memory free percentage: 7%\n"
         ),
         "/usr/sbin/sysctl": "total = 2048.00M  used = 1536.50M  free = 511.50M\n",
         "/usr/bin/vm_stat": (
             "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+            "Pages wired down: 2048.\n"
             "Pageouts: 1024.\n"
         ),
     }
@@ -226,6 +228,8 @@ def test_resource_health_parses_partial_public_tool_output():
     assert health.memory_free_percent == 7.0
     assert health.swap_used_bytes == int(1536.5 * 1024 * 1024)
     assert health.pageout_bytes == 1024 * 16384
+    assert health.wired_bytes == 2048 * 16384
+    assert health.physical_memory_bytes == 25769803776
 
 
 def adaptive_scheduler(

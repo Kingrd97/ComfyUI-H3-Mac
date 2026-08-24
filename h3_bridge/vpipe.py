@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import fcntl
 import json
+import math
 import os
 import queue
 import shutil
@@ -31,6 +32,13 @@ class VPipeConfig:
     low_wired_pool_mb: int = 8192
     worker_enabled: bool = False
     worker_heartbeat_timeout_seconds: float = 15.0
+    worker_cooldown_seconds: float = 90.0
+    worker_memory_poll_seconds: float = 5.0
+    worker_memory_stable_samples: int = 3
+    worker_min_memory_free_percent: float = 20.0
+    worker_min_reclaimable_mb: int = 6144
+    worker_max_wired_percent: float = 18.0
+    worker_memory_retry_limit: int = 1
 
 
 @dataclass(frozen=True)
@@ -81,6 +89,48 @@ def load_vpipe_config(project_root: Path) -> VPipeConfig:
         work_dir = (project_root / work_dir).resolve()
 
     output_subdir = str(raw.get("output_subdir", "h3-jobs"))
+    worker_cooldown_seconds = float(
+        raw.get("vpipe_worker_cooldown_seconds", 90.0)
+    )
+    worker_memory_poll_seconds = float(
+        raw.get("vpipe_worker_memory_poll_seconds", 5.0)
+    )
+    worker_memory_stable_samples = int(
+        raw.get("vpipe_worker_memory_stable_samples", 3)
+    )
+    worker_min_memory_free_percent = float(
+        raw.get("vpipe_worker_min_memory_free_percent", 20.0)
+    )
+    worker_min_reclaimable_mb = int(
+        raw.get("vpipe_worker_min_reclaimable_mb", 6144)
+    )
+    worker_max_wired_percent = float(
+        raw.get("vpipe_worker_max_wired_percent", 18.0)
+    )
+    worker_memory_retry_limit = int(
+        raw.get("vpipe_worker_memory_retry_limit", 1)
+    )
+    if not all(
+        math.isfinite(value)
+        for value in (
+            worker_cooldown_seconds,
+            worker_memory_poll_seconds,
+            worker_min_memory_free_percent,
+            worker_max_wired_percent,
+        )
+    ):
+        raise ValueError("vpipe worker memory-gate values must be finite")
+    if worker_cooldown_seconds < 0 or worker_memory_poll_seconds <= 0:
+        raise ValueError("vpipe worker cooldown must be non-negative and poll positive")
+    if worker_memory_stable_samples < 1:
+        raise ValueError("vpipe worker stable samples must be at least one")
+    if not 0 <= worker_min_memory_free_percent <= 100:
+        raise ValueError("vpipe worker minimum memory-free percent is invalid")
+    if not 0 < worker_max_wired_percent <= 100:
+        raise ValueError("vpipe worker maximum wired percent is invalid")
+    if worker_min_reclaimable_mb < 0 or worker_memory_retry_limit < 0:
+        raise ValueError("vpipe worker reclaimable memory and retries cannot be negative")
+
     return VPipeConfig(
         binary=binary,
         work_dir=work_dir,
@@ -103,6 +153,13 @@ def load_vpipe_config(project_root: Path) -> VPipeConfig:
         worker_heartbeat_timeout_seconds=float(
             raw.get("vpipe_worker_heartbeat_timeout_seconds", 15.0)
         ),
+        worker_cooldown_seconds=worker_cooldown_seconds,
+        worker_memory_poll_seconds=worker_memory_poll_seconds,
+        worker_memory_stable_samples=worker_memory_stable_samples,
+        worker_min_memory_free_percent=worker_min_memory_free_percent,
+        worker_min_reclaimable_mb=worker_min_reclaimable_mb,
+        worker_max_wired_percent=worker_max_wired_percent,
+        worker_memory_retry_limit=worker_memory_retry_limit,
     )
 
 
@@ -493,6 +550,7 @@ class VPipeRunner:
             progress(1, 100, "Queued for launchd vpipe worker")
 
         reported = 1
+        last_message = "Queued for launchd vpipe worker"
         missing_worker_since: float | None = None
         while True:
             current = _read_json(status_path)
@@ -502,8 +560,9 @@ class VPipeRunner:
             except (TypeError, ValueError):
                 current_progress = 1
             message = str(current.get("message", state))
-            if progress and current_progress > reported:
-                reported = current_progress
+            if progress and (current_progress > reported or message != last_message):
+                reported = max(reported, current_progress)
+                last_message = message
                 progress(min(100, current_progress), 100, message)
             if state == "completed" and output_path.is_file() and output_path.stat().st_size > 0:
                 elapsed = float(current.get("elapsed_seconds", time.monotonic() - started))

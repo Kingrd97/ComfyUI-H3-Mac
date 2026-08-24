@@ -33,6 +33,8 @@ macOS 没有公开、通用的接口可以读取任意前台 App 的真实掉帧
 
 引擎使用 `caffeinate -s` 包装：只有接电时才阻止系统因空闲睡眠，电池供电时仍遵循 macOS 正常睡眠策略。vpipe 由 launchd 保活的 worker 持有，而不是 ComfyUI 的一次性子进程，因此重启界面不会杀死推理；worker 重启时只会接管出生指纹完全一致的进程组。ComfyUI 启动时不再自动终止孤儿任务；确实需要清理时，使用 `H3 Control.command` 中显式的“清理已确认孤儿进程”。这是进程保活，不是可落盘的去噪检查点。
 
+vpipe 队列还带独立的启动前内存闸门。默认在上一镜头的引擎退出后等待 90 秒，然后每 5 秒读取 `memory_pressure`、`vm.swapusage` 和 `vm_stat`；建议可回收余量至少 6144 MiB、建议空闲比例至少 20%、system wired 不高于物理内存的 18%，并且 swap/pageout 没有越过自适应调度的增长阈值。连续 3 次健康后才启动下一镜头。如果引擎日志明确包含 vpipe 的 Metal 内存拒绝标记，会再次冷却并按同规格自动重试一次。所有阈值都可以通过 `config.json` 中的 `vpipe_worker_*` 项覆盖。
+
 ## 控制正在运行的任务
 
 双击项目根目录的 `H3 Control.command`，或使用：
@@ -99,7 +101,14 @@ streaming 对 checkpoint 做只读、非缓存读取，不会反复改写模型�
   "auto_memory_recover_percent": 15,
   "auto_swap_growth_pause_mib_per_minute": 512,
   "auto_pageout_pause_mib_per_minute": 256,
-  "auto_require_ac_power": true
+  "auto_require_ac_power": true,
+  "vpipe_worker_cooldown_seconds": 90,
+  "vpipe_worker_memory_poll_seconds": 5,
+  "vpipe_worker_memory_stable_samples": 3,
+  "vpipe_worker_min_memory_free_percent": 20,
+  "vpipe_worker_min_reclaimable_mb": 6144,
+  "vpipe_worker_max_wired_percent": 18,
+  "vpipe_worker_memory_retry_limit": 1
 }
 ```
 

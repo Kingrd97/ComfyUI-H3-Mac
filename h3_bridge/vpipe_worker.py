@@ -40,8 +40,20 @@ from .runner import (
     _terminate_process_group,
     _write_generation_lock_metadata,
 )
-from .scheduler import AdaptiveScheduler, process_group_alive
+from .scheduler import (
+    AdaptiveScheduler,
+    ResourceHealth,
+    process_group_alive,
+    resource_health,
+)
 from .vpipe import VPipeConfig, _progress_from_line, build_vpipe_command, load_vpipe_config
+
+
+_MIB = 1024 * 1024
+
+
+class _RetryableMemoryPressureError(RuntimeError):
+    """The engine refused a launch safely and the same ticket may be retried."""
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -77,6 +89,7 @@ class VPipeWorker:
         self.queue_root = self.root / "queue"
         self.heartbeat_path = self.root / "heartbeat.json"
         self.active_path = self.root / "active.json"
+        self.recovery_path = self.root / "memory-recovery.json"
         self.output_root = (
             self.project_root / "runtime" / "ComfyUI" / "output"
         ).resolve()
@@ -88,6 +101,192 @@ class VPipeWorker:
         self._active_job = ""
         self._last_heartbeat_at = float("-inf")
         self._last_heartbeat_signature: tuple[str, str, str] | None = None
+
+    @staticmethod
+    def _growth_rate(
+        previous: int | None,
+        current: int | None,
+        elapsed: float,
+    ) -> float | None:
+        if previous is None or current is None or elapsed <= 0:
+            return None
+        if current <= previous:
+            return 0.0
+        return (current - previous) / _MIB * 60.0 / elapsed
+
+    def _memory_gate_reason(
+        self,
+        current: ResourceHealth,
+        previous: ResourceHealth | None,
+        elapsed: float,
+    ) -> tuple[str, dict[str, object]]:
+        details: dict[str, object] = {}
+        free = current.memory_free_percent
+        if free is not None:
+            details["memory_free_percent"] = round(free, 1)
+            if free < self.vpipe_config.worker_min_memory_free_percent:
+                return "memory pressure has not recovered", details
+
+        total = current.physical_memory_bytes
+        if free is not None and total is not None:
+            reclaimable_mb = total * free / 100.0 / _MIB
+            details["estimated_reclaimable_mb"] = round(reclaimable_mb)
+            if reclaimable_mb < self.vpipe_config.worker_min_reclaimable_mb:
+                return "reclaimable memory is below the vpipe launch floor", details
+
+        wired = current.wired_bytes
+        if wired is not None and total is not None and total > 0:
+            wired_percent = wired / total * 100.0
+            details["wired_percent"] = round(wired_percent, 1)
+            details["wired_mb"] = round(wired / _MIB)
+            if wired_percent > self.vpipe_config.worker_max_wired_percent:
+                return "system wired memory is still too high", details
+
+        if previous is not None:
+            swap_growth = self._growth_rate(
+                previous.swap_used_bytes, current.swap_used_bytes, elapsed
+            )
+            pageout_growth = self._growth_rate(
+                previous.pageout_bytes, current.pageout_bytes, elapsed
+            )
+            if swap_growth is not None:
+                details["swap_growth_mib_per_minute"] = round(swap_growth, 1)
+                if (
+                    swap_growth
+                    >= self.bridge_config.auto_swap_growth_pause_mib_per_minute
+                ):
+                    return "swap is still growing", details
+            if pageout_growth is not None:
+                details["pageout_growth_mib_per_minute"] = round(pageout_growth, 1)
+                if (
+                    pageout_growth
+                    >= self.bridge_config.auto_pageout_pause_mib_per_minute
+                ):
+                    return "pageouts are still growing", details
+        return "", details
+
+    def _wait_for_memory_recovery(self, job_dir: Path) -> None:
+        recovery = _read_json(self.recovery_path)
+        try:
+            not_before = float(recovery.get("not_before", 0.0))
+        except (TypeError, ValueError):
+            not_before = 0.0
+        previous: ResourceHealth | None = None
+        previous_at = 0.0
+        stable = 0
+        while True:
+            if (job_dir / "cancel.request").exists():
+                raise InterruptedError("vpipe generation cancelled before launch.")
+            sampled_at = time.monotonic()
+            current = resource_health()
+            reason, details = self._memory_gate_reason(
+                current,
+                previous,
+                sampled_at - previous_at if previous is not None else 0.0,
+            )
+            cooldown_remaining = max(0.0, not_before - time.time())
+            if cooldown_remaining > 0:
+                reason = f"cooling down after the previous shot ({cooldown_remaining:.0f}s)"
+                details["cooldown_remaining_seconds"] = round(cooldown_remaining)
+            if reason:
+                stable = 0
+            else:
+                stable += 1
+                if stable >= self.vpipe_config.worker_memory_stable_samples:
+                    self._status(
+                        job_dir,
+                        state="queued",
+                        progress=1,
+                        message="Memory recovered; starting vpipe",
+                        memory_gate=details,
+                    )
+                    return
+                reason = (
+                    "verifying stable memory recovery "
+                    f"({stable}/{self.vpipe_config.worker_memory_stable_samples})"
+                )
+            self._status(
+                job_dir,
+                state="queued",
+                progress=1,
+                message=f"Waiting for memory recovery: {reason}",
+                memory_gate=details,
+            )
+            self.heartbeat(state="waiting-memory", message=reason)
+            previous = current
+            previous_at = sampled_at
+            time.sleep(self.vpipe_config.worker_memory_poll_seconds)
+
+    def _record_memory_cooldown(self, job_id: str) -> None:
+        now = time.time()
+        _atomic_json(
+            self.recovery_path,
+            {
+                "schema_version": 1,
+                "last_job": job_id,
+                "last_engine_exit_at": now,
+                "not_before": now + self.vpipe_config.worker_cooldown_seconds,
+            },
+        )
+
+    @staticmethod
+    def _memory_refusal(log_path: Path) -> bool:
+        try:
+            with log_path.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(0, size - 128 * 1024))
+                tail = handle.read().decode("utf-8", errors="replace").lower()
+        except OSError:
+            return False
+        return any(
+            marker in tail
+            for marker in (
+                "not enough memory for a",
+                "refusing rather than thrashing",
+                "wired metal buffers cannot be paged out",
+            )
+        )
+
+    def _can_retry_memory_refusal(
+        self, ticket: dict[str, object], log_path: Path
+    ) -> bool:
+        try:
+            attempts = int(ticket.get("memory_retry_attempts", 0))
+        except (TypeError, ValueError):
+            attempts = self.vpipe_config.worker_memory_retry_limit
+        return (
+            attempts < self.vpipe_config.worker_memory_retry_limit
+            and self._memory_refusal(log_path)
+        )
+
+    def _retain_memory_retry_ticket(
+        self,
+        ticket_path: Path,
+        job_dir: Path,
+        error: str,
+    ) -> bool:
+        ticket = _read_json(ticket_path)
+        if not ticket or not self._can_retry_memory_refusal(
+            ticket, job_dir / "engine.log"
+        ):
+            return False
+        retry_ticket = dict(ticket)
+        retry_ticket["memory_retry_attempts"] = (
+            int(ticket.get("memory_retry_attempts", 0)) + 1
+        )
+        retry_ticket["last_memory_error"] = error
+        _atomic_json(ticket_path, retry_ticket)
+        self._status(
+            job_dir,
+            state="queued",
+            progress=1,
+            message="Waiting for memory recovery before retrying the same shot",
+            error="",
+            last_memory_error=error,
+            memory_retry_attempts=retry_ticket["memory_retry_attempts"],
+        )
+        return True
 
     def heartbeat(self, *, state: str = "idle", message: str = "") -> None:
         now = time.monotonic()
@@ -214,6 +413,7 @@ class VPipeWorker:
             return
         partial_path.unlink(missing_ok=True)
         command = build_vpipe_command(self.vpipe_config, profile, pipeline_path)
+        self._wait_for_memory_recovery(job_dir)
         lock = self._wait_for_generation_lock(job_dir)
         started = time.monotonic()
         process: subprocess.Popen[bytes] | None = None
@@ -380,10 +580,20 @@ class VPipeWorker:
                     process.pid, engine_signature
                 ) in {"gone", "reused"}
                 if return_code != 0:
+                    if self._can_retry_memory_refusal(ticket, log_path):
+                        raise _RetryableMemoryPressureError(
+                            "vpipe refused the launch under memory pressure; "
+                            "waiting to retry the same shot"
+                        )
                     raise RuntimeError(
                         f"vpipe exited with status {return_code}. See {log_path}"
                     )
                 if not partial_path.is_file() or partial_path.stat().st_size == 0:
+                    if self._can_retry_memory_refusal(ticket, log_path):
+                        raise _RetryableMemoryPressureError(
+                            "vpipe refused the launch under memory pressure; "
+                            "waiting to retry the same shot"
+                        )
                     raise RuntimeError(f"vpipe finished without a video. See {log_path}")
                 partial_path.replace(result_path)
                 elapsed = time.monotonic() - started
@@ -404,6 +614,7 @@ class VPipeWorker:
                 registry_cleanup_safe = _terminate_process_group(
                     process, engine_signature
                 )
+            retrying = isinstance(exc, _RetryableMemoryPressureError)
             terminal_state = "cancelled" if isinstance(exc, InterruptedError) else "failed"
             if scheduler is not None:
                 scheduler.finish(terminal_state, str(exc))
@@ -411,9 +622,14 @@ class VPipeWorker:
                 partial_path.unlink(missing_ok=True)
             self._status(
                 job_dir,
-                state=terminal_state,
-                message=terminal_state,
-                error=str(exc),
+                state="queued" if retrying else terminal_state,
+                message=(
+                    "Memory pressure detected; cooling down before one automatic retry"
+                    if retrying
+                    else terminal_state
+                ),
+                error="" if retrying else str(exc),
+                last_memory_error=str(exc) if retrying else "",
                 elapsed_seconds=time.monotonic() - started,
             )
             raise
@@ -430,6 +646,8 @@ class VPipeWorker:
                         f"{terminal_state}: vpipe process group exit unverified",
                     )
             self.active_path.unlink(missing_ok=True)
+            if process is not None:
+                self._record_memory_cooldown(job_id)
             lock.close()
 
     def _recover_active(self) -> None:
@@ -472,6 +690,8 @@ class VPipeWorker:
         if state not in {"exact", "leaderless"}:
             partial = job_dir / "result.partial.mp4"
             result = job_dir / "result.mp4"
+            ticket_path = self.queue_root / f"{job_id}.json"
+            keep_ticket = False
             if self._valid_recovered_video(partial):
                 partial.replace(result)
                 self._status(
@@ -481,14 +701,22 @@ class VPipeWorker:
                     message="vpipe complete after worker recovery",
                 )
             else:
-                self._status(
+                keep_ticket = self._retain_memory_retry_ticket(
+                    ticket_path,
                     job_dir,
-                    state="failed",
-                    message="failed",
-                    error="vpipe exited while its launchd worker was restarting",
+                    "vpipe hit memory pressure while its worker was restarting",
                 )
+                if not keep_ticket:
+                    self._status(
+                        job_dir,
+                        state="failed",
+                        message="failed",
+                        error="vpipe exited while its launchd worker was restarting",
+                    )
             self._remove_recovered_registration(job_dir, pgid, signature)
-            (self.queue_root / f"{job_id}.json").unlink(missing_ok=True)
+            if not keep_ticket:
+                ticket_path.unlink(missing_ok=True)
+            self._record_memory_cooldown(job_id)
             self.active_path.unlink(missing_ok=True)
             return
         self._active_job = job_id
@@ -530,6 +758,8 @@ class VPipeWorker:
             time.sleep(0.5)
         partial = job_dir / "result.partial.mp4"
         result = job_dir / "result.mp4"
+        ticket_path = self.queue_root / f"{job_id}.json"
+        keep_ticket = False
         if self._valid_recovered_video(partial):
             partial.replace(result)
             scheduler.finish("completed")
@@ -541,14 +771,22 @@ class VPipeWorker:
             )
         else:
             scheduler.finish("failed", "surviving vpipe exited without a video")
-            self._status(
+            keep_ticket = self._retain_memory_retry_ticket(
+                ticket_path,
                 job_dir,
-                state="failed",
-                message="failed",
-                error="surviving vpipe exited without a video",
+                "surviving vpipe exited under memory pressure",
             )
+            if not keep_ticket:
+                self._status(
+                    job_dir,
+                    state="failed",
+                    message="failed",
+                    error="surviving vpipe exited without a video",
+                )
         self._remove_recovered_registration(job_dir, pgid, signature)
-        (self.queue_root / f"{job_id}.json").unlink(missing_ok=True)
+        if not keep_ticket:
+            ticket_path.unlink(missing_ok=True)
+        self._record_memory_cooldown(job_id)
         self.active_path.unlink(missing_ok=True)
         self._active_job = ""
 
@@ -616,6 +854,7 @@ class VPipeWorker:
             ticket = _read_json(ticket_path)
             job_id = str(ticket.get("job_id", ""))
             job_dir: Path | None = None
+            keep_ticket = False
             try:
                 job_dir = self._canonical_job_dir(job_id, ticket.get("job_dir", ""))
                 self._active_job = job_id
@@ -624,20 +863,35 @@ class VPipeWorker:
             except BaseException as exc:
                 try:
                     if job_dir is not None:
-                        self._status(
-                            job_dir,
-                            state=(
-                                "cancelled"
-                                if isinstance(exc, InterruptedError)
-                                else "failed"
-                            ),
-                            message="worker error",
-                            error=str(exc),
-                        )
+                        if isinstance(exc, _RetryableMemoryPressureError):
+                            keep_ticket = self._retain_memory_retry_ticket(
+                                ticket_path,
+                                job_dir,
+                                str(exc),
+                            )
+                            if not keep_ticket:
+                                self._status(
+                                    job_dir,
+                                    state="failed",
+                                    message="worker error",
+                                    error=str(exc),
+                                )
+                        else:
+                            self._status(
+                                job_dir,
+                                state=(
+                                    "cancelled"
+                                    if isinstance(exc, InterruptedError)
+                                    else "failed"
+                                ),
+                                message="worker error",
+                                error=str(exc),
+                            )
                 except OSError:
                     pass
             finally:
-                ticket_path.unlink(missing_ok=True)
+                if not keep_ticket:
+                    ticket_path.unlink(missing_ok=True)
                 self._active_job = ""
                 self.heartbeat()
             if once:

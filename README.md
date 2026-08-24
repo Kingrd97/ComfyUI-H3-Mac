@@ -135,7 +135,9 @@ output/h3-jobs/<job-id>/
 └── result.mp4
 ```
 
-An identical completed request can be reused. The vpipe worker survives a ComfyUI restart, and launchd restarts the worker if the controller itself exits; it reattaches to an exact surviving process group. Neither engine currently exports denoising-step state, so an engine process that actually dies cannot resume exactly from step 12/20. Cancellation preserves logs and the partial file, although an unfinished MP4 may not be playable.
+An identical completed request can be reused. The vpipe worker survives a ComfyUI restart, and launchd restarts the worker if the controller itself exits; it reattaches to an exact surviving process group. After each vpipe engine exit, the worker cools down for 90 seconds by default. It starts the next shot only after public macOS memory headroom, wired-memory share, and swap/pageout growth remain healthy for three consecutive samples. If vpipe still refuses safely because wired Metal memory is short, the worker retains the identical prompt, reference, seed, geometry, and frame count and retries it once after another cooldown. The wait is recorded in `vpipe-status.json`; no Metal process runs during that wait and the queued shot can be cancelled.
+
+Neither engine currently exports denoising-step state, so an engine process that actually dies cannot resume exactly from step 12/20. This retry restarts only the failed shot with identical settings; it is not a denoising checkpoint. Cancellation preserves logs and the partial file, although an unfinished MP4 may not be playable.
 
 Double-click `H3 Control.command` to inspect, pause, resume, or change the scheduling policy of active jobs. The same controls are available from a shell:
 
