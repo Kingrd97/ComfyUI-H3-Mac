@@ -27,7 +27,10 @@ def _service_specs(project_root: Path) -> dict[str, dict[str, object]]:
         raise RuntimeError("尚未安装 Python 环境，请先运行 Install.command。")
     environment = {
         "HOME": str(Path.home()),
-        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "PATH": (
+            f"{Path.home() / '.local' / 'bin'}:"
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        ),
         "PYTHONUNBUFFERED": "1",
     }
     common: dict[str, object] = {

@@ -79,7 +79,19 @@ def load_vpipe_config(project_root: Path) -> VPipeConfig:
         binary = Path(discovered).resolve()
     else:
         candidate = Path(configured).expanduser()
-        binary = candidate if candidate.is_absolute() else (project_root / candidate).resolve()
+        local_candidate = Path.home() / ".local" / "bin" / candidate
+        if (
+            not candidate.is_absolute()
+            and candidate.name == str(candidate)
+            and local_candidate.is_file()
+        ):
+            binary = local_candidate.resolve()
+        else:
+            binary = (
+                candidate
+                if candidate.is_absolute()
+                else (project_root / candidate).resolve()
+            )
 
     configured_work = os.environ.get(
         "VPIPE_WORK_DIR", str(raw.get("vpipe_work_dir", "~/workspace/github/vpipe-work"))

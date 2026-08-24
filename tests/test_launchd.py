@@ -22,6 +22,9 @@ def test_launchd_keeps_control_plane_and_worker_alive(tmp_path: Path):
 
     worker_args = specs[WORKER_LABEL]["ProgramArguments"]
     assert worker_args[:3] == [str(python), "-m", "h3_bridge.vpipe_worker"]
+    assert specs[WORKER_LABEL]["EnvironmentVariables"]["PATH"].startswith(
+        str(Path.home() / ".local" / "bin") + ":"
+    )
     assert specs[COMFY_LABEL]["ProgramArguments"][-1] == str(
         tmp_path / "scripts" / "start.sh"
     )

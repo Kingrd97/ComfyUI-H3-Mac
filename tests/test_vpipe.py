@@ -11,6 +11,7 @@ from h3_bridge.vpipe import (
     VPipeRunner,
     _pipeline,
     _progress_from_line,
+    load_vpipe_config,
 )
 
 
@@ -32,6 +33,26 @@ def make_fake_vpipe(tmp_path: Path) -> tuple[Path, Path]:
     )
     binary.chmod(0o755)
     return binary, work_dir
+
+
+def test_vpipe_config_finds_user_local_bin_under_launchd_path(
+    tmp_path: Path, monkeypatch
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "config.example.json").write_text(
+        json.dumps({"vpipe_binary": "vpipe", "vpipe_work_dir": "vpipe-work"}),
+        encoding="utf-8",
+    )
+    local_binary = tmp_path / "home" / ".local" / "bin" / "vpipe"
+    local_binary.parent.mkdir(parents=True)
+    local_binary.write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("h3_bridge.vpipe.shutil.which", lambda _: None)
+
+    config = load_vpipe_config(project)
+
+    assert config.binary == local_binary.resolve()
 
 
 def test_vpipe_runner_materializes_silent_pipeline_and_reuses_result(tmp_path: Path):
