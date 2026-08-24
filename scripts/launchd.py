@@ -8,6 +8,7 @@ import os
 import plistlib
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -101,10 +102,19 @@ def _bootout(label: str) -> None:
 
 
 def _bootstrap(label: str) -> None:
-    subprocess.run(
-        ["launchctl", "bootstrap", DOMAIN, str(_path(label))],
-        check=True,
-    )
+    command = ["launchctl", "bootstrap", DOMAIN, str(_path(label))]
+    # A legacy `launchctl submit` job can remain in launchd's bookkeeping for
+    # a short time after bootout.  During that window bootstrap returns EIO
+    # (exit 5), even though the old label disappears immediately afterwards.
+    # Retry only that transient result; preserve every other launchctl error.
+    for attempt in range(3):
+        try:
+            subprocess.run(command, check=True)
+            return
+        except subprocess.CalledProcessError as exc:
+            if exc.returncode != 5 or attempt == 2:
+                raise
+            time.sleep(attempt + 1)
 
 
 def install(*, worker_only: bool = False, restart: bool = False) -> int:
