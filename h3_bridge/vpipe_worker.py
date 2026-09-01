@@ -17,7 +17,6 @@ import json
 import os
 import selectors
 import signal
-import shutil
 import subprocess
 import sys
 import time
@@ -46,7 +45,14 @@ from .scheduler import (
     process_group_alive,
     resource_health,
 )
-from .vpipe import VPipeConfig, _progress_from_line, build_vpipe_command, load_vpipe_config
+from .vpipe import (
+    VPipeConfig,
+    _valid_video_file,
+    _progress_from_line,
+    build_vpipe_command,
+    load_vpipe_config,
+    validate_vpipe_installation,
+)
 
 
 _MIB = 1024 * 1024
@@ -54,6 +60,10 @@ _MIB = 1024 * 1024
 
 class _RetryableMemoryPressureError(RuntimeError):
     """The engine refused a launch safely and the same ticket may be retried."""
+
+
+class _PausedBeforeLaunch(RuntimeError):
+    """A durable ticket was paused before any model process could start."""
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -101,6 +111,45 @@ class VPipeWorker:
         self._active_job = ""
         self._last_heartbeat_at = float("-inf")
         self._last_heartbeat_signature: tuple[str, str, str] | None = None
+        self._last_readiness_at = float("-inf")
+        self._last_readiness_error = ""
+
+    def _readiness_error(self, *, force: bool = False) -> str:
+        """Return a cached, actionable preflight error for release installs."""
+
+        now = time.monotonic()
+        if not force and now - self._last_readiness_at < 30.0:
+            return self._last_readiness_error
+        error = ""
+        try:
+            validate_vpipe_installation(self.vpipe_config)
+            # Test/fake configurations intentionally omit an expected build ref.
+            # Release configurations always load it from versions.env and must
+            # also pass the complete Q8 + LoRA verifier before a ticket starts.
+            if self.vpipe_config.expected_ref:
+                verifier = self.project_root / "scripts" / "verify_vpipe_assets.py"
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(verifier),
+                        "--project-root",
+                        str(self.project_root),
+                        *([] if force else ["--files-only"]),
+                    ],
+                    cwd=self.project_root,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode != 0:
+                    detail = (result.stdout or result.stderr).strip()
+                    error = detail or "vpipe Q8 assets are incomplete"
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            error = str(exc)
+        self._last_readiness_at = now
+        self._last_readiness_error = error
+        return error
 
     @staticmethod
     def _growth_rate(
@@ -177,6 +226,7 @@ class VPipeWorker:
         while True:
             if (job_dir / "cancel.request").exists():
                 raise InterruptedError("vpipe generation cancelled before launch.")
+            self._raise_if_paused_before_launch(job_dir)
             sampled_at = time.monotonic()
             current = resource_health()
             reason, details = self._memory_gate_reason(
@@ -193,6 +243,7 @@ class VPipeWorker:
             else:
                 stable += 1
                 if stable >= self.vpipe_config.worker_memory_stable_samples:
+                    self._raise_if_paused_before_launch(job_dir)
                     self._status(
                         job_dir,
                         state="queued",
@@ -216,6 +267,22 @@ class VPipeWorker:
             previous = current
             previous_at = sampled_at
             time.sleep(self.vpipe_config.worker_memory_poll_seconds)
+
+    def _raise_if_paused_before_launch(self, job_dir: Path) -> None:
+        """Return a paused ticket without holding the worker or global lock."""
+
+        if (job_dir / "cancel.request").exists():
+            raise InterruptedError("vpipe generation cancelled before launch.")
+        if (job_dir / "pause.request").exists():
+            self._status(
+                job_dir,
+                state="paused",
+                progress=1,
+                message="Paused before vpipe model launch",
+                error="",
+            )
+            self.heartbeat(state="paused", message="job paused before launch")
+            raise _PausedBeforeLaunch("vpipe job paused before model launch")
 
     def _record_memory_cooldown(self, job_id: str) -> None:
         now = time.time()
@@ -343,7 +410,18 @@ class VPipeWorker:
         lock = lock_path.open("a+", encoding="utf-8")
         while True:
             try:
+                self._raise_if_paused_before_launch(job_dir)
+            except BaseException:
+                lock.close()
+                raise
+            try:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if (job_dir / "pause.request").exists():
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                    lock.close()
+                    self._raise_if_paused_before_launch(job_dir)
+                    lock = lock_path.open("a+", encoding="utf-8")
+                    continue
                 return lock
             except BlockingIOError:
                 if (job_dir / "cancel.request").exists():
@@ -389,32 +467,59 @@ class VPipeWorker:
 
     def _launch(self, ticket: dict[str, object], job_dir: Path) -> None:
         job_id = str(ticket["job_id"])
+        ticket_path = self.queue_root / f"{job_id}.json"
+        latest_ticket = _read_json(ticket_path)
+        if latest_ticket:
+            ticket = latest_ticket
         pipeline_path = job_dir / "pipeline.vpipeline"
         expected_digest = str(ticket.get("pipeline_sha256", ""))
         actual_digest = hashlib.sha256(pipeline_path.read_bytes()).hexdigest()
         if not expected_digest or actual_digest != expected_digest:
             raise RuntimeError("vpipe pipeline changed after it was queued")
-        profile = str(ticket.get("resource_profile", "low"))
-        if profile not in {"low", "auto", "max"}:
-            raise ValueError("Invalid vpipe resource profile")
-
         result_path = job_dir / "result.mp4"
         partial_path = job_dir / "result.partial.mp4"
         log_path = job_dir / "engine.log"
         cancel_path = job_dir / "cancel.request"
-        if result_path.is_file() and result_path.stat().st_size > 0:
-            self._status(
-                job_dir,
-                state="completed",
-                progress=100,
-                message="Reused completed vpipe job",
-                elapsed_seconds=0.0,
-            )
-            return
+        if self._valid_recovered_video(result_path):
+            if not bool(ticket.get("force_rerun", False)):
+                self._status(
+                    job_dir,
+                    state="completed",
+                    progress=100,
+                    message="Reused completed vpipe job",
+                    elapsed_seconds=0.0,
+                )
+                return
         partial_path.unlink(missing_ok=True)
-        command = build_vpipe_command(self.vpipe_config, profile, pipeline_path)
         self._wait_for_memory_recovery(job_dir)
         lock = self._wait_for_generation_lock(job_dir)
+        try:
+            self._raise_if_paused_before_launch(job_dir)
+        except BaseException:
+            lock.close()
+            raise
+        # Serialize the last queued profile change with launch-time cap
+        # selection.  Once state becomes `launching`, later profile controls
+        # affect scheduling only after the process is active; they cannot
+        # pretend to replace already-frozen vpipe pool caps.
+        with (job_dir / "submit.lock").open("a+", encoding="utf-8") as submit_lock:
+            fcntl.flock(submit_lock.fileno(), fcntl.LOCK_EX)
+            latest_ticket = _read_json(ticket_path)
+            if latest_ticket:
+                ticket = latest_ticket
+            control = _read_json(job_dir / "control.json")
+            profile = str(control.get("policy", ticket.get("resource_profile", "low")))
+            if profile not in {"low", "auto", "max"}:
+                raise ValueError("Invalid vpipe resource profile")
+            self._status(
+                job_dir,
+                state="launching",
+                progress=1,
+                message=f"Launching vpipe; {profile} memory caps are now fixed",
+                resource_profile=profile,
+                launch_resource_profile=profile,
+            )
+        command = build_vpipe_command(self.vpipe_config, profile, pipeline_path)
         started = time.monotonic()
         process: subprocess.Popen[bytes] | None = None
         scheduler: AdaptiveScheduler | None = None
@@ -471,6 +576,7 @@ class VPipeWorker:
                     *command,
                 ]
                 try:
+                    self._raise_if_paused_before_launch(job_dir)
                     process = subprocess.Popen(
                         child_command,
                         cwd=self.vpipe_config.work_dir,
@@ -496,6 +602,7 @@ class VPipeWorker:
                     controller_pid=controller_pid,
                     controller_start_signature=controller_signature,
                 )
+                self._raise_if_paused_before_launch(job_dir)
                 os.write(gate_write_fd, b"G")
                 os.close(gate_write_fd)
                 gate_write_fd = -1
@@ -514,7 +621,7 @@ class VPipeWorker:
                 ack_read_fd = -1
                 if not activated:
                     raise RuntimeError("vpipe launcher did not activate its registry")
-                scheduler.start()
+                scheduler.start(preserve_existing_control=True)
                 _atomic_json(
                     self.active_path,
                     {
@@ -588,13 +695,15 @@ class VPipeWorker:
                     raise RuntimeError(
                         f"vpipe exited with status {return_code}. See {log_path}"
                     )
-                if not partial_path.is_file() or partial_path.stat().st_size == 0:
+                if not self._valid_recovered_video(partial_path):
                     if self._can_retry_memory_refusal(ticket, log_path):
                         raise _RetryableMemoryPressureError(
                             "vpipe refused the launch under memory pressure; "
                             "waiting to retry the same shot"
                         )
-                    raise RuntimeError(f"vpipe finished without a video. See {log_path}")
+                    raise RuntimeError(
+                        f"vpipe finished without a valid video. See {log_path}"
+                    )
                 partial_path.replace(result_path)
                 elapsed = time.monotonic() - started
                 scheduler.finish("completed")
@@ -615,10 +724,17 @@ class VPipeWorker:
                     process, engine_signature
                 )
             retrying = isinstance(exc, _RetryableMemoryPressureError)
-            terminal_state = "cancelled" if isinstance(exc, InterruptedError) else "failed"
+            paused_before_launch = isinstance(exc, _PausedBeforeLaunch)
+            terminal_state = (
+                "paused"
+                if paused_before_launch
+                else "cancelled"
+                if isinstance(exc, InterruptedError)
+                else "failed"
+            )
             if scheduler is not None:
                 scheduler.finish(terminal_state, str(exc))
-            if not self.bridge_config.keep_failed_output:
+            if not paused_before_launch and not self.bridge_config.keep_failed_output:
                 partial_path.unlink(missing_ok=True)
             self._status(
                 job_dir,
@@ -626,9 +742,11 @@ class VPipeWorker:
                 message=(
                     "Memory pressure detected; cooling down before one automatic retry"
                     if retrying
+                    else "Paused before vpipe model launch"
+                    if paused_before_launch
                     else terminal_state
                 ),
-                error="" if retrying else str(exc),
+                error="" if retrying or paused_before_launch else str(exc),
                 last_memory_error=str(exc) if retrying else "",
                 elapsed_seconds=time.monotonic() - started,
             )
@@ -792,33 +910,7 @@ class VPipeWorker:
 
     @staticmethod
     def _valid_recovered_video(path: Path) -> bool:
-        if not path.is_file() or path.stat().st_size == 0:
-            return False
-        ffprobe = shutil.which("ffprobe")
-        if ffprobe is None:
-            return True
-        try:
-            result = subprocess.run(
-                [
-                    ffprobe,
-                    "-v",
-                    "error",
-                    "-select_streams",
-                    "v:0",
-                    "-show_entries",
-                    "stream=codec_type",
-                    "-of",
-                    "default=nw=1:nk=1",
-                    str(path),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        return result.returncode == 0 and "video" in result.stdout
+        return _valid_video_file(path)
 
     def _remove_recovered_registration(
         self, job_dir: Path, pgid: int, signature: str
@@ -845,25 +937,87 @@ class VPipeWorker:
             )
             if not tickets:
                 self._active_job = ""
-                self.heartbeat()
+                readiness_error = self._readiness_error()
+                if readiness_error:
+                    self.heartbeat(state="degraded", message=readiness_error)
+                else:
+                    self.heartbeat()
                 if once:
                     return 0
                 time.sleep(0.5)
                 continue
-            ticket_path = tickets[0]
+            ticket_path = next(
+                (
+                    path
+                    for path in tickets
+                    if not (
+                        Path(str(_read_json(path).get("job_dir", "")))
+                        / "pause.request"
+                    ).exists()
+                    or (
+                        Path(str(_read_json(path).get("job_dir", "")))
+                        / "cancel.request"
+                    ).exists()
+                ),
+                None,
+            )
+            if ticket_path is None:
+                self._active_job = ""
+                self.heartbeat(state="paused", message="queued jobs paused by user")
+                if once:
+                    return 0
+                time.sleep(0.5)
+                continue
             ticket = _read_json(ticket_path)
             job_id = str(ticket.get("job_id", ""))
             job_dir: Path | None = None
             keep_ticket = False
+            preserve_heartbeat = False
             try:
                 job_dir = self._canonical_job_dir(job_id, ticket.get("job_dir", ""))
+                if (job_dir / "cancel.request").exists():
+                    raise InterruptedError("vpipe generation cancelled before launch.")
+                if not ticket_path.is_file():
+                    # ComfyUI may withdraw a queued ticket while the worker is
+                    # selecting it.  Preserve the UI's terminal status.
+                    continue
+                readiness_error = self._readiness_error(force=True)
+                if (job_dir / "cancel.request").exists():
+                    raise InterruptedError("vpipe generation cancelled before launch.")
+                if not ticket_path.is_file():
+                    # In particular, do not overwrite a concurrent cancelled
+                    # state with "Waiting for assets" after a slow verifier.
+                    continue
+                if readiness_error:
+                    keep_ticket = True
+                    preserve_heartbeat = True
+                    self._status(
+                        job_dir,
+                        state="queued",
+                        progress=1,
+                        message=f"Waiting for vpipe assets: {readiness_error}",
+                    )
+                    self.heartbeat(state="degraded", message=readiness_error)
+                    if once:
+                        return 0
+                    time.sleep(5.0)
+                    continue
                 self._active_job = job_id
                 self.heartbeat(state="starting-job")
                 self._launch(ticket, job_dir)
             except BaseException as exc:
                 try:
                     if job_dir is not None:
-                        if isinstance(exc, _RetryableMemoryPressureError):
+                        if isinstance(exc, _PausedBeforeLaunch):
+                            keep_ticket = True
+                            self._status(
+                                job_dir,
+                                state="paused",
+                                progress=1,
+                                message="Paused before vpipe model launch",
+                                error="",
+                            )
+                        elif isinstance(exc, _RetryableMemoryPressureError):
                             keep_ticket = self._retain_memory_retry_ticket(
                                 ticket_path,
                                 job_dir,
@@ -893,7 +1047,8 @@ class VPipeWorker:
                 if not keep_ticket:
                     ticket_path.unlink(missing_ok=True)
                 self._active_job = ""
-                self.heartbeat()
+                if not preserve_heartbeat:
+                    self.heartbeat()
             if once:
                 return 0
 

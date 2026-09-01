@@ -127,9 +127,9 @@
     "inputs": {
       "storyboard_dir": {"name": "Storyboard directory", "tooltip": "Connect Storyboard directory from Assemble Storyboard MP4."},
       "timed_script": {"name": "Timed dialogue", "tooltip": "Write one seconds|dialogue cue per line, using absolute time in the assembled video."},
-      "voice": {"name": "Voice", "tooltip": "Yunxi Neural is the recommended natural young male voice; macOS Tingting is the offline fallback."},
+      "voice": {"name": "Voice", "tooltip": "macOS Tingting stays offline; Neural voices are optional and require internet."},
       "rate": {"name": "Speech rate", "tooltip": "Words per minute; 180 is a natural starting point."},
-      "pitch_hz": {"name": "Pitch adjustment (Hz)", "tooltip": "+4 Hz gives Tudou a slightly lighter voice without a cartoon effect."},
+      "pitch_hz": {"name": "Pitch adjustment (Hz)", "tooltip": "+4 Hz gives the example travel cat a slightly lighter voice without a cartoon effect."},
       "keep_ambience": {"name": "Keep centre-cancelled ambience", "tooltip": "Off is safest and fully removes H3 speech. Enable only when the source has clean separable stereo ambience."}
     },
     "outputs": {

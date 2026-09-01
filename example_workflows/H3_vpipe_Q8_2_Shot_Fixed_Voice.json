@@ -73,7 +73,7 @@
         {"name": "Run summary", "type": "STRING", "links": null, "slot_index": 2}
       ],
       "properties": {"Node name for S&R": "H3GenerateVideoVPipe"},
-      "widgets_values": ["", 960, 544, 124, 6, "silent_for_fixed_tts", "low", 101, "fixed", true, "turbo_544p"]
+      "widgets_values": ["", 960, 544, 124, 6, "silent_for_fixed_tts", "auto", 101, "fixed", true, "turbo_544p"]
     },
     {
       "id": 5,
@@ -115,7 +115,7 @@
         {"name": "Run summary", "type": "STRING", "links": null, "slot_index": 2}
       ],
       "properties": {"Node name for S&R": "H3GenerateVideoVPipe"},
-      "widgets_values": ["", 960, 544, 124, 6, "silent_for_fixed_tts", "low", 202, "fixed", true, "turbo_544p"]
+      "widgets_values": ["", 960, 544, 124, 6, "silent_for_fixed_tts", "auto", 202, "fixed", true, "turbo_544p"]
     },
     {
       "id": 7,
@@ -154,7 +154,7 @@
         {"name": "Narration summary", "type": "STRING", "links": null, "slot_index": 2}
       ],
       "properties": {"Node name for S&R": "H3AddFixedNarration"},
-      "widgets_values": ["", "0.55|大家好，我是土豆。\n5.73|第二个镜头，我们继续出发！", "zh-CN-YunxiNeural", 180, 4, false]
+      "widgets_values": ["", "0.55|大家好，我是旅行猫。\n5.73|第二个镜头，我们继续出发！", "macOS:Tingting", 180, 4, false]
     }
   ],
   "links": [

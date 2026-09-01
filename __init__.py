@@ -5,8 +5,12 @@
 # importing the heavy ComfyUI runtime in that special test-collection case.
 if __package__:
     from .nodes import comfy_entrypoint
+    from .h3_bridge.comfy_jobs import register_comfy_routes
 
-    __all__ = ["comfy_entrypoint"]
+    WEB_DIRECTORY = "./web"
+    register_comfy_routes()
+
+    __all__ = ["WEB_DIRECTORY", "comfy_entrypoint"]
 else:
     comfy_entrypoint = None
     __all__ = []

@@ -1,10 +1,46 @@
 from __future__ import annotations
 
+import os
+import io
+import json
 import subprocess
+import time
 from pathlib import Path
 
 from scripts import launchd
 from scripts.launchd import COMFY_LABEL, WORKER_LABEL, _bootstrap, _service_specs
+
+
+class FakeHTTPResponse(io.BytesIO):
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+
+def test_comfy_readiness_requires_our_vpipe_node(monkeypatch):
+    missing = FakeHTTPResponse(json.dumps({"SomeOtherNode": {}}).encode())
+    monkeypatch.setattr(launchd.urllib.request, "urlopen", lambda *_a, **_k: missing)
+
+    ready, detail = launchd._comfy_ready()
+
+    assert ready is False
+    assert "H3 vpipe node is missing" in detail
+
+
+def test_comfy_readiness_accepts_our_vpipe_node(monkeypatch):
+    response = FakeHTTPResponse(
+        json.dumps({"H3GenerateVideoVPipe": {"display_name": "H3"}}).encode()
+    )
+    monkeypatch.setattr(launchd.urllib.request, "urlopen", lambda *_a, **_k: response)
+
+    ready, detail = launchd._comfy_ready()
+
+    assert ready is True
+    assert detail == "H3 vpipe node ready"
 
 
 def test_launchd_keeps_control_plane_and_worker_alive(tmp_path: Path):
@@ -23,7 +59,7 @@ def test_launchd_keeps_control_plane_and_worker_alive(tmp_path: Path):
     worker_args = specs[WORKER_LABEL]["ProgramArguments"]
     assert worker_args[:3] == [str(python), "-m", "h3_bridge.vpipe_worker"]
     assert specs[WORKER_LABEL]["EnvironmentVariables"]["PATH"].startswith(
-        str(Path.home() / ".local" / "bin") + ":"
+        str(tmp_path / "runtime" / "bin") + ":"
     )
     assert specs[COMFY_LABEL]["ProgramArguments"][-1] == str(
         tmp_path / "scripts" / "start.sh"
@@ -34,12 +70,15 @@ def test_bootstrap_retries_transient_launchctl_eio(monkeypatch):
     calls = 0
     sleeps: list[int] = []
 
-    def fake_run(command, *, check):
+    def fake_run(command, **_kwargs):
         nonlocal calls
         calls += 1
-        if calls == 1:
-            raise subprocess.CalledProcessError(5, command)
-        return subprocess.CompletedProcess(command, 0)
+        return subprocess.CompletedProcess(
+            command,
+            5 if calls == 1 else 0,
+            stdout="",
+            stderr="transient" if calls == 1 else "",
+        )
 
     monkeypatch.setattr(launchd.subprocess, "run", fake_run)
     monkeypatch.setattr(launchd.time, "sleep", sleeps.append)
@@ -51,8 +90,10 @@ def test_bootstrap_retries_transient_launchctl_eio(monkeypatch):
 
 
 def test_bootstrap_does_not_retry_permanent_error(monkeypatch):
-    def fake_run(command, *, check):
-        raise subprocess.CalledProcessError(78, command)
+    def fake_run(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command, 78, stdout="", stderr="invalid launch agent"
+        )
 
     monkeypatch.setattr(launchd.subprocess, "run", fake_run)
     monkeypatch.setattr(
@@ -63,7 +104,57 @@ def test_bootstrap_does_not_retry_permanent_error(monkeypatch):
 
     try:
         _bootstrap(COMFY_LABEL)
-    except subprocess.CalledProcessError as exc:
-        assert exc.returncode == 78
+    except RuntimeError as exc:
+        assert "(78)" in str(exc)
+        assert "invalid launch agent" in str(exc)
     else:
         raise AssertionError("expected launchctl failure")
+
+
+def test_changed_launchd_plist_reloads_loaded_service(tmp_path: Path, monkeypatch):
+    python = tmp_path / "runtime/.venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text("", encoding="utf-8")
+    monkeypatch.setattr(launchd, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(launchd, "AGENTS", tmp_path / "agents")
+    monkeypatch.setattr(launchd, "_loaded", lambda _label: True)
+    monkeypatch.setattr(launchd, "_write_plist", lambda _path, _value: True)
+    stopped: list[str] = []
+    started: list[str] = []
+    monkeypatch.setattr(launchd, "_bootout", stopped.append)
+    monkeypatch.setattr(launchd, "_bootstrap", started.append)
+    waited: list[list[str]] = []
+    monkeypatch.setattr(launchd, "_wait_ready", lambda labels: waited.append(labels))
+
+    assert launchd.install(worker_only=True) == 0
+
+    assert stopped == [WORKER_LABEL]
+    assert started == [WORKER_LABEL]
+    assert waited == [[WORKER_LABEL]]
+
+
+def test_worker_readiness_rejects_stale_heartbeat(tmp_path: Path):
+    heartbeat = tmp_path / "runtime/vpipe-worker/heartbeat.json"
+    heartbeat.parent.mkdir(parents=True)
+    heartbeat.write_text(
+        f'{{"pid":{os.getpid()},"state":"idle","updated_at":1}}', encoding="utf-8"
+    )
+
+    ready, detail = launchd._worker_ready(tmp_path)
+
+    assert ready is False
+    assert "stale" in detail
+
+
+def test_worker_readiness_rejects_starting_crash_loop(tmp_path: Path):
+    heartbeat = tmp_path / "runtime/vpipe-worker/heartbeat.json"
+    heartbeat.parent.mkdir(parents=True)
+    heartbeat.write_text(
+        f'{{"pid":{os.getpid()},"state":"starting","updated_at":{time.time()}}}',
+        encoding="utf-8",
+    )
+
+    ready, detail = launchd._worker_ready(tmp_path)
+
+    assert ready is False
+    assert "starting" in detail

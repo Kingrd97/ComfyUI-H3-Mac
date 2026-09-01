@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import plistlib
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
@@ -28,7 +31,7 @@ def _service_specs(project_root: Path) -> dict[str, dict[str, object]]:
     environment = {
         "HOME": str(Path.home()),
         "PATH": (
-            f"{Path.home() / '.local' / 'bin'}:"
+            f"{runtime / 'bin'}:{Path.home() / '.local' / 'bin'}:"
             "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         ),
         "PYTHONUNBUFFERED": "1",
@@ -85,6 +88,68 @@ def _loaded(label: str) -> bool:
     return result.returncode == 0
 
 
+def _comfy_ready() -> tuple[bool, str]:
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:8188/object_info/H3GenerateVideoVPipe", timeout=1.5
+        ) as response:
+            if response.status != 200:
+                return False, f"HTTP {response.status}"
+            payload = json.load(response)
+            if not isinstance(payload, dict) or "H3GenerateVideoVPipe" not in payload:
+                return False, "ComfyUI is reachable but the H3 vpipe node is missing"
+            return True, "H3 vpipe node ready"
+    except (OSError, ValueError, TypeError, urllib.error.URLError) as exc:
+        return False, str(exc)
+
+
+def _worker_ready(project_root: Path = PROJECT_ROOT) -> tuple[bool, str]:
+    heartbeat_path = project_root / "runtime/vpipe-worker/heartbeat.json"
+    try:
+        heartbeat = json.loads(heartbeat_path.read_text(encoding="utf-8"))
+        age = max(0.0, time.time() - float(heartbeat.get("updated_at", 0)))
+        state = str(heartbeat.get("state", "unknown"))
+        pid = int(heartbeat.get("pid", 0))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        return False, f"heartbeat unavailable: {exc}"
+    if age > 20.0:
+        return False, f"heartbeat stale ({age:.1f}s)"
+    if state == "starting":
+        return False, f"worker still starting (pid {pid})"
+    if pid <= 1:
+        return False, "heartbeat has no valid worker pid"
+    try:
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False, f"heartbeat worker pid {pid} is not alive"
+    return True, f"heartbeat {state}, pid {pid} ({age:.1f}s)"
+
+
+def _control_ready(label: str) -> tuple[bool, str]:
+    if not _loaded(label):
+        return False, "launchd label not loaded"
+    return _comfy_ready() if label == COMFY_LABEL else _worker_ready(PROJECT_ROOT)
+
+
+def _wait_ready(labels: list[str], timeout: float = 60.0) -> None:
+    deadline = time.monotonic() + timeout
+    details: dict[str, str] = {}
+    while time.monotonic() < deadline:
+        pending = []
+        for label in labels:
+            ready, detail = _control_ready(label)
+            details[label] = detail
+            if not ready:
+                pending.append(label)
+        if not pending:
+            for label in labels:
+                print(f"[ok] {label}: {details[label]}")
+            return
+        time.sleep(0.5)
+    summary = "; ".join(f"{label}: {details.get(label, 'unknown')}" for label in labels)
+    raise RuntimeError(f"launchd control plane did not become ready: {summary}")
+
+
 def _write_plist(path: Path, value: dict[str, object]) -> bool:
     encoded = plistlib.dumps(value, fmt=plistlib.FMT_XML, sort_keys=True)
     old = path.read_bytes() if path.exists() else b""
@@ -111,13 +176,22 @@ def _bootstrap(label: str) -> None:
     # (exit 5), even though the old label disappears immediately afterwards.
     # Retry only that transient result; preserve every other launchctl error.
     for attempt in range(3):
-        try:
-            subprocess.run(command, check=True)
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode == 0:
             return
-        except subprocess.CalledProcessError as exc:
-            if exc.returncode != 5 or attempt == 2:
-                raise
+        if result.returncode == 5 and attempt < 2:
             time.sleep(attempt + 1)
+            continue
+        detail = (result.stderr or result.stdout).strip() or "no launchctl details"
+        raise RuntimeError(
+            f"launchctl bootstrap failed ({result.returncode}): {detail}"
+        )
 
 
 def install(*, worker_only: bool = False, restart: bool = False) -> int:
@@ -127,13 +201,18 @@ def install(*, worker_only: bool = False, restart: bool = False) -> int:
     for label in labels:
         changed = _write_plist(_path(label), specs[label])
         loaded = _loaded(label)
-        if loaded and restart:
+        if loaded and (restart or changed):
             _bootout(label)
             loaded = False
         if not loaded:
+            if label == WORKER_LABEL:
+                (PROJECT_ROOT / "runtime/vpipe-worker/heartbeat.json").unlink(
+                    missing_ok=True
+                )
             _bootstrap(label)
-        detail = "restarted" if restart else "installed" if changed else "ready"
+        detail = "restarted" if restart or changed else "ready"
         print(f"[ok] {label}: {detail}")
+    _wait_ready(labels)
     return 0
 
 
@@ -141,9 +220,9 @@ def status(*, worker_only: bool = False) -> int:
     labels = [WORKER_LABEL] if worker_only else [COMFY_LABEL, WORKER_LABEL]
     failed = False
     for label in labels:
-        loaded = _loaded(label)
-        print(f"{'[ok]' if loaded else '[--]'} {label}: {'running' if loaded else 'not loaded'}")
-        failed = failed or not loaded
+        ready, detail = _control_ready(label)
+        print(f"{'[ok]' if ready else '[--]'} {label}: {detail}")
+        failed = failed or not ready
     return 1 if failed else 0
 
 

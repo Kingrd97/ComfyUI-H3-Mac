@@ -27,10 +27,16 @@ sdk_major="${sdk_version%%.*}"
   die "锁定版 h3.c 编译需要 macOS SDK 26 或更高版本（当前：${sdk_version:-无法读取}）。请升级 Xcode 或 Xcode Command Line Tools。"
 command -v brew >/dev/null || die "请先从 https://brew.sh 安装 Homebrew。"
 
-info "安装系统依赖（FFmpeg、Python、Git）"
-brew install ffmpeg python@3.12 git
+info "安装系统依赖（FFmpeg、Python、Git、断点续传下载器）"
+brew install ffmpeg python@3.12 git aria2
 
 mkdir -p "$RUNTIME/models" "$BIN"
+
+if [[ "$macos_major" -ge 26 ]]; then
+  /bin/bash "$PROJECT_ROOT/scripts/install_vpipe.sh"
+else
+  warn "vpipe v${VPIPE_VERSION} 官方二进制需要 macOS 26；本机将只安装 h3.c 后端。"
+fi
 
 if [[ -d "$COMFY/.git" ]]; then
   info "同步已验证的 ComfyUI 版本"
@@ -73,13 +79,13 @@ if ! xcrun swiftc \
 fi
 
 info "建立隔离的 Python 环境"
-"$(brew --prefix python@3.12)/bin/python3.12" -m venv --clear "$VENV"
+"$(brew --prefix python@3.12)/bin/python3.12" -m venv "$VENV"
 "$VENV/bin/python" -m pip install --upgrade pip wheel
 "$VENV/bin/python" -m pip install -r "$COMFY/requirements.txt"
 "$VENV/bin/python" -m pip install -r "$PROJECT_ROOT/requirements.txt"
 
 info "建立隔离的模型下载工具环境"
-"$(brew --prefix python@3.12)/bin/python3.12" -m venv --clear "$MODEL_VENV"
+"$(brew --prefix python@3.12)/bin/python3.12" -m venv "$MODEL_VENV"
 "$MODEL_VENV/bin/python" -m pip install "huggingface_hub==$HUGGINGFACE_HUB_VERSION"
 
 info "接入 ComfyUI 自定义节点"
@@ -100,11 +106,12 @@ info "创建或安全迁移本地配置"
 chmod +x "$PROJECT_ROOT"/*.command "$PROJECT_ROOT"/scripts/*.sh "$PROJECT_ROOT"/scripts/*.py
 
 info "安装并启动 ComfyUI / vpipe launchd 后台服务"
-"$VENV/bin/python" "$PROJECT_ROOT/scripts/launchd.py" install
+warn "现在会短暂重启 ComfyUI/worker 以加载新代码；存活的 vpipe 引擎会按进程指纹恢复接管。"
+"$VENV/bin/python" "$PROJECT_ROOT/scripts/launchd.py" restart
 
 info "安装完成"
 printf '%s\n' \
-  "1. 双击 Download Model.command 下载模型" \
+  "1. 双击 Download Model.command；推荐选择 vpipe Q8（约 65 GiB，首次需约 120 GiB 空闲）" \
   "2. ComfyUI 与 vpipe worker 已由 launchd 自动保活；Start.command 可检查并打开界面" \
   "3. 浏览器打开 http://127.0.0.1:8188" \
   "4. 运行中可双击 H3 Control.command 暂停、继续或切换资源策略"

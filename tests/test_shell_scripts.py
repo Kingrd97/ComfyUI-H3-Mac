@@ -78,6 +78,9 @@ def test_start_and_install_enable_launchd_supervision():
 
     assert "scripts/launchd.py" in start
     assert "scripts/launchd.py" in install
+    assert "object_info/H3GenerateVideoVPipe" not in start
+    assert "/system_stats" not in start
+    assert '"$ROOT/scripts/launchd.py" status' in start
     assert (ROOT / "Service Control.command").is_file()
 
 
@@ -108,8 +111,57 @@ def test_installer_is_pinned_and_model_tooling_is_isolated():
     assert '"$sdk_major" -ge 26' in install
     assert "xcrun --sdk macosx --show-sdk-version" in doctor
     assert '"$sdk_major" -ge 26' in doctor
-    assert install.count('-m venv --clear "$') == 2
+    assert install.count('-m venv "$') == 2
     assert "huggingface_hub==" not in requirements
+
+
+def test_vpipe_installer_and_q8_preparation_are_reproducible_and_resumable():
+    install = (ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
+    vpipe_install = (ROOT / "scripts" / "install_vpipe.sh").read_text(
+        encoding="utf-8"
+    )
+    prepare = (ROOT / "scripts" / "prepare_vpipe_q8.sh").read_text(
+        encoding="utf-8"
+    )
+    versions = (ROOT / "versions.env").read_text(encoding="utf-8")
+    ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+    assert '/bin/bash "$PROJECT_ROOT/scripts/install_vpipe.sh"' in install
+    assert '"$PROJECT_ROOT/scripts/launchd.py" restart' in install
+    assert "VPIPE_RELEASE_SHA256=" in versions
+    assert "VPIPE_REF=" in versions
+    assert "codesign --verify --deep --strict" in vpipe_install
+    assert "VPIPE_PREP_CAFFEINATED" in prepare
+    assert 'cd "$PROJECT_ROOT"' in prepare
+    assert "command -v taskpolicy" in prepare
+    assert "--component-root" in prepare
+    assert "for reusable_dir in text_encoders vae tokenizer" in prepare
+    assert "available_kib + stage2_credit_kib" in prepare
+    core_gate = prepare[prepare.index("core_ready=0") : prepare.index("# Quantizer output")]
+    assert "--model-only" in core_gate
+    assert "--files-only" not in core_gate
+    assert "--initialize-manifest" in prepare
+    assert '"${H3_MODEL_LICENSE_ACCEPTED:-0}" != "1"' in prepare
+    assert prepare.index("H3_MODEL_LICENSE_ACCEPTED") < prepare.index('mkdir -p "$work_dir"')
+    assert prepare.count("overwrite_existing=true") == 3
+    assert "lock_age < 30" in prepare
+    assert "正在初始化锁" in prepare
+    assert "schema_version\":1" not in prepare
+    check_branch = prepare.index('if [[ "$mode" == "check" ]]')
+    assert check_branch < prepare.index('mkdir -p "$work_dir"')
+    assert check_branch < prepare.index('remove_guarded_tree()')
+    assert "只读预检通过" in prepare
+    assert "private_workflows/" in ignore
+    assert "config.json.v*-backup" in ignore
+
+    for path in (
+        ROOT / "Prepare vpipe Q8.command",
+        ROOT / "scripts/install_vpipe.sh",
+        ROOT / "scripts/prepare_vpipe_q8.sh",
+        ROOT / "scripts/verify_vpipe_assets.py",
+    ):
+        assert path.is_file()
+        assert os.access(path, os.X_OK)
 
 
 def test_h3_control_uses_only_the_locked_shared_signal_helper():

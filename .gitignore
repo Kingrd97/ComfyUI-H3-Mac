@@ -5,7 +5,7 @@ __pycache__/
 .venv/
 runtime/
 config.json
-config.json.v1-backup
+config.json.v*-backup
 output/
 models/
 *.gguf
@@ -13,3 +13,5 @@ models/
 *.ckpt
 *.part
 *.log
+private_workflows/
+*.private.json

@@ -349,6 +349,30 @@ def test_manual_pause_overrides_max_and_can_resume(tmp_path: Path):
     assert signals == [signal.SIGSTOP, signal.SIGCONT]
 
 
+def test_scheduler_can_preserve_a_prelaunch_control_update(tmp_path: Path):
+    (tmp_path / "control.json").write_text(
+        json.dumps(
+            {
+                "paused": True,
+                "policy": "low",
+                "control_generation": 42,
+                "updated_at": 123.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    scheduler = AdaptiveScheduler(tmp_path, 4242, "max", config(tmp_path))
+    with patch("h3_bridge.scheduler.signal_process_group", return_value=True), patch(
+        "h3_bridge.scheduler.set_process_group_background"
+    ):
+        scheduler.start(preserve_existing_control=True)
+
+    control = json.loads((tmp_path / "control.json").read_text(encoding="utf-8"))
+    assert control["paused"] is True
+    assert control["policy"] == "low"
+    assert control["control_generation"] == 42
+
+
 def test_process_birth_fingerprint_retries_after_transient_ps_failure(tmp_path: Path):
     engine_signatures = iter(["", "birth-fingerprint"])
 

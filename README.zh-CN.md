@@ -4,13 +4,14 @@
 
 [![tests](https://github.com/Kingrd97/ComfyUI-H3-Mac/actions/workflows/tests.yml/badge.svg)](https://github.com/Kingrd97/ComfyUI-H3-Mac/actions/workflows/tests.yml)
 
-在 Apple Silicon Mac 上，把官方 [ComfyUI](https://github.com/Comfy-Org/ComfyUI) 可视化工作流与 MiniMax H3 Metal 后端连接起来。本项目同时支持 [antirez/h3.c](https://github.com/antirez/h3.c) 和可选的 vpipe Q8 FL2VA 后端，并提供双击安装、原生中英文节点、结构化镜头提示词、分镜合并、统一后期配音、可复用任务和 MP4 输出。
+在 Apple Silicon Mac 上，把官方 [ComfyUI](https://github.com/Comfy-Org/ComfyUI) 可视化工作流与 MiniMax H3 Metal 后端连接起来。在 macOS 26 上会安装经过固定版本与签名校验的 [vpipe](https://github.com/tgo-app-dev/vpipe) Q8 FL2VA 后端；同时保留 [antirez/h3.c](https://github.com/antirez/h3.c) 原始权重高级工作流。项目提供双击安装、原生中英文节点、结构化镜头提示词、分镜合并、统一后期配音、可复用任务和 MP4 输出。
 
 > 当前为早期版本。h3.c 本身仍在快速开发；本项目优先保证安装可重复、素材顺序明确、任务可取消、结果和日志可追踪。
 
 ## 它解决什么问题
 
 - ComfyUI 负责拖拽编排、素材复用和参数管理。
+- 固定版本的官方 vpipe，以及适合 24/48GB Mac、可续传并严格校验的 Q8 准备流程。
 - h3.c 负责 H3 原生权重的 Metal 推理与 MP4 编码。
 - `low / auto / max` 资源档位不会暗中修改 steps、layers 或 reuse；`auto` 通常以前台友好的后台优先级慢跑，原生响应守护器或持续回退指标发现压力时短暂暂停，持续空闲后再解除后台策略。
 - 节点名称、输入项、说明和悬浮提示跟随 ComfyUI 原生界面语言切换中英文。
@@ -22,22 +23,22 @@
 
 ## 要求
 
-- Apple Silicon Mac（h3.c 当前主要在 M3 Max / M5 Max 上优化和验证）
-- macOS 15 或更高版本、Homebrew，以及提供 macOS SDK 26 或更高版本的 Xcode / Xcode Command Line Tools。锁定版 h3.c 使用 macOS 15 引入的运行时 Metal API 和 SDK 26 引入的编译期符号；安装器会分别预检两者，并显式设置 15.0 部署目标，不再错误继承当前 SDK 版本。
-- 足够快的 SSD 和大量可用磁盘
-- FL2VA 约 134 GiB；FL2VA 与 Ref2VA 两棵目录的逻辑总量约 268 GiB。锁定版本的内容寻址下载器会让相同 blob 只存一份，实际约 196 GiB，建议开始前至少留出 220 GiB；写入前会按精确版本检查空间。
+- Apple Silicon Mac。推荐的 vpipe 路线要求 **macOS 26 或更高版本**；安装器会拒绝不兼容二进制，不会勉强运行。h3.c 本身支持 macOS 15+，但锁定源码仍需要带 macOS SDK 26 的 Xcode / Command Line Tools。
+- Homebrew 和足够快的 SSD。
+- 推荐 vpipe Q8：最终 Q8 约 65 GiB，另有两套 Turbo LoRA 约 2.5 GiB；首次紧凑转换需约 120 GiB 可用空间。每个 BF16 临时阶段校验后立即删除，Ctrl-C 后重跑可续传。
+- 高级 h3.c BF16：FL2VA 约 134 GiB；FL2VA + Ref2VA 通过内容寻址缓存实际约 196 GiB，分别建议预留 150/220 GiB。
 
-48GB M5 Pro 默认推荐 `auto`。当前保守内存规则会在物理内存低于 64 GiB 时使用 h3.c 的 `--ssd-streaming`，人在使用电脑或电池供电时通常保持 macOS 后台优先级慢跑。原生 helper 会把“最近有键鼠输入 + display-link 回调间隔或回调 age 连续异常”作为强响应信号，两者同时出现时走快速暂停路径；它不需要“辅助功能”或“屏幕录制”权限，也不捕获屏幕内容。主显示器 framebuffer age 只写入诊断信息，绝不会单独触发暂停。如果 display-link 强信号不可用，还会用持续的非 H3 CPU 或 WindowServer/GPU 组合压力回退判断。`auto` 还会在严重内存、swap/pageout 或温度压力下暂停，并在低电量模式或恢复余量不足时禁止空闲满速。健康稳定 15 秒后先后台试跑 20 秒，没有复发再继续后台生成。接电、空闲 5 分钟，且最新采样中的其他 CPU、WindowServer 与显示信号都已平稳时，才解除后台策略。这些控制仍是 best-effort；`taskpolicy` 不是 GPU 硬配额。
+48GB M5 Pro 默认推荐 vpipe Q8 + `auto`，不需要走 h3.c 原始权重的 SSD streaming。人在使用电脑或电池供电时通常保持 macOS 后台优先级慢跑；原生 helper 把“最近有键鼠输入 + display-link 回调间隔或 age 连续异常”作为强响应信号，两者同时出现时快速暂停。它不需要辅助功能或屏幕录制权限，也不捕获屏幕。强信号不可用时会根据持续的其他 CPU、WindowServer/GPU 压力回退判断；严重内存、swap/pageout 或温度压力也会暂停。恢复健康后先后台试跑，接电并安静空闲五分钟后再解除后台策略。这些控制仍是 best-effort；`taskpolicy` 不是 GPU 硬配额。
 
 macOS 没有可通用于任意前台 App 的真实掉帧计数接口；守护器观察的是显示系统响应，而不是读取另一个 App 的渲染器。因此原生信号和回退指标仍属于 best-effort，而不是硬实时保证：`SIGSTOP` 无法撤回已经提交给 GPU 的 Metal 工作，也不会释放模型占用的统一内存。
 
-64 GiB 是安全启发式，不是 h3.c 的硬要求。锁定版引擎在复杂 Ref2VA 常驻示例中报告约 40.1GB 进程物理峰值，因此 48GB 再叠加浏览器、IDE 等前台应用很容易吃紧。SSD streaming 能大幅降低 DiT 常驻内存，但会进行大量只读、非缓存的模型读取，可能争抢磁盘带宽；它不会反复重写模型，也不能把读取量等同成 SSD 的写入寿命消耗。强制使用常驻模式前请先看[资源控制说明](docs/RESOURCE_CONTROL_zh.md)。
+对于高级 h3.c 路线，64 GiB 只是安全启发式。锁定版引擎在复杂 Ref2VA 常驻示例中报告约 40.1GB 进程物理峰值，48GB 再叠加前台应用会很紧。SSD streaming 会降低 DiT 常驻内存，但也会进行大量只读模型读取、争抢磁盘带宽。强制常驻前请先看[资源控制说明](docs/RESOURCE_CONTROL_zh.md)。
 
 ## 一键安装
 
 1. 下载或克隆本仓库。
 2. 双击 `Install.command`。macOS 首次拦截时，用右键 → 打开；不要关闭系统安全保护。
-3. 双击 `Download Model.command`，新手选择 `1) Ref2VA`。
+3. 双击 `Download Model.command`，macOS 26 新手选择 `1) vpipe Q8 FL2VA`。
 4. 安装器会启动并保活 ComfyUI 与 vpipe worker。双击 `Start.command` 可检查服务并打开 `http://127.0.0.1:8188`。在 `Comfy > Locale > Language` 里选择“中文”。
 
 命令行方式：
@@ -50,45 +51,39 @@ cd ComfyUI-H3-Mac
 ./Start.command
 ```
 
-安装器会把 ComfyUI、h3.c、虚拟环境和模型放在本项目的 `runtime/` 下，便于整体移动或删除，不污染系统 Python。上游版本锁定在 `versions.env`，确保安装的是本版本已经验证过的组合。
+全新安装时，ComfyUI、固定版本的 vpipe 应用包、h3.c、虚拟环境、vpipe 工作目录和模型都位于本项目的 `runtime/` 下。请尽量先确定项目最终位置再准备 Q8；如果之后移动了目录，需要重跑 `Install.command`，再运行 `Prepare vpipe Q8.command low`，完整权重会被复用，同时刷新 launchd 路径、软链接和 vpipe 模型注册表。上游版本和官方 vpipe DMG 校验值锁定在 `versions.env`。
 
 模型下载使用单独的锁定 Python 环境，不会改变 ComfyUI 的依赖。`runtime/models/MiniMax-H3` 是指向同一 `runtime/` 内内容寻址缓存的相对链接，整体移动项目后仍然有效。下载完成后会记录包含每个路径、尺寸、blob 标识和模型版本的清单；`Doctor.command` 会先核验清单，再调用 h3.c `--info` 检查模型结构。
 
-配置 schema v2 使用保守的一次性升级策略：先把旧配置备份为 `config.json.v1-backup`；只有完全匹配旧版随附 `background` 默认值的配置才迁移到新的 `adaptive` 行为，用户改过的行为或阈值都会保留。
+配置 schema v4 使用保守迁移策略：先备份旧配置，保留用户改过的资源阈值和仍存在的外 vpipe 工作目录；旧的未锁定 `vpipe` 可执行默认值会迁到项目内已验证的二进制。
 
 `Start.command` 只会安装/检查 launchd 服务并打开界面，不会重复启动已存在的服务器。launchd 中的 ComfyUI 控制层故意让 PyTorch 跑在 CPU；这**不会禁用 Metal 推理**，H3 节点会调用独立的 Metal 引擎。前台诊断时可使用 `H3_FOREGROUND=1 H3_COMFY_DEVICE=auto ./Start.command`。
 
 锁定的官方 ComfyUI 前端已经原生支持中文。第一次打开时会参考浏览器语言，以后可以从 `Comfy > Locale > Language` 切换；H3 节点会跟随设置变化，不依赖第三方汉化补丁。
 
-最简单的开始方法：打开 `工作流 > 浏览模板`，选择 `ComfyUI-H3-Mac`，载入 `H3_Beginner_2_Shot_Storyboard`。画布已经分成“参考素材、镜头 1、镜头 2、最终 MP4”四组。
+完成模型选项 1 后，最简单的开始方法是打开 `工作流 > 浏览模板`，选择 `ComfyUI-H3-Mac`，载入 `H3_vpipe_Q8_2_Shot_Fixed_Voice`。画布已经分成“参考素材、镜头 1、镜头 2、最终 MP4、统一旁白”几组。`H3_Beginner_2_Shot_Storyboard` 是高级 h3.c BF16/Ref2VA 模板，需要模型选项 2，并会占用明显更多磁盘与统一内存。
 
 ## 第一个工作流
 
 ### 推荐的 vpipe Q8 工作流
 
-已经安装 vpipe 和 Q8 FL2VA 模型时，载入 `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json`。每个 `H3 · 使用 vpipe Q8 生成` 节点根据首帧生成一个静音镜头；`H3 · 合并分镜 MP4` 负责拼接；最后由 `H3 · 添加统一固定配音` 根据每行 `秒数|台词`，用同一个音色完成整片配音。推荐的 `zh-CN-YunxiNeural` 更自然但需要联网，`macOS:Tingting` 可离线使用。“保留环境声”默认关闭，确保 H3 原人声被彻底丢弃。
+模型选项 1 完成后，载入 `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json`。每个 `H3 · 使用 vpipe Q8 生成` 节点根据首帧生成静音镜头；合并后再按每行 `秒数|台词` 统一配音。公开模板默认使用完全离线的 `macOS:Tingting`；Neural 音色为显式联网选项，会把台词发送到对应语音服务。“保留环境声”默认关闭，避免多个镜头的原人声与最终旁白叠加。
 
-vpipe 节点会优先从 `PATH` 自动查找 `vpipe`，并把持久化任务票据提交给 launchd worker，而不是把推理做成 ComfyUI 的一次性子进程。如路径不同，可在 `config.json` 设置 `vpipe_binary`、`vpipe_work_dir`、模型、LoRA 和 low/auto 模式的常驻内存池限制。启用这个可选后端不会改变原有 h3.c 安装路径。
+节点会优先使用项目内经过验证的 vpipe，并把持久化任务票据提交给 launchd worker。Q8 与两套固定版本 LoRA 未通过完整性校验前，worker 会明确显示 `degraded/等待资产`，不会到 0% 后才模糊失败。高级用户仍可在 `config.json` 覆盖路径和 low/auto 的内存池限制。
 
-在 ComfyUI 里依次添加：
+手动搭建时，最短的 vpipe 管线是：
 
-1. `Load Image`：加载主体照片。
-2. `H3 · 新建参考素材列表`。
-3. `H3 · 添加图片参考`：连接前两个节点。
-4. 如有更多素材，继续串联多个“添加参考”节点；顺序就是 Picture 1、Picture 2……
-5. 推荐添加 `H3 · 编写单镜头提示词`，分栏填写分镜并把输出连到生成节点的“提示词”。
-6. `H3 · 生成视频（Metal）`：连接最终参考素材，第一次用 `quality=preview`、`resource=low` 冒烟。
+1. `Load Image`：加载该镜头的首帧图。
+2. 可选 `H3 · 编写单镜头提示词`，把文本输出连到生成节点。
+3. `H3 · 使用 vpipe Q8 生成（Metal）`，把图片连到“首帧参考”。
+4. 多镜头时重复“提示词 + 首帧 + vpipe 生成”，把每个“任务目录”按时间线连到 `H3 · 合并分镜 MP4`。
+5. 如需旁白，合并后再加 `H3 · 添加统一固定配音`，避免各镜头声线不一致。
 
-低内存 Mac 的普通单镜头上限是 5 秒。更长的视频应拆成多个可复用镜头，再无损合并。h3.c 的机械上限仍是 362 帧（约 15.08 秒），但超过 5 秒只会在至少 64 GiB 内存的 Mac 上放行；专家确认内存压力和磁盘余量后也可显式设置 `H3_ALLOW_LARGE_JOB=1`。这是因为长镜头 VAE 解码在内存受限机器上出现过极端 swap 增长。
+公开模板默认是 `960×544`、124 帧、6 步 Turbo、静音生成和 `resource=auto`，适合首次冒烟。`auto` 在使用电脑时保持后台友好，持续响应压力下自动暂停，接电且持续空闲后恢复正常优先级。`max` 只建议在电脑无其他任务时使用。
 
-确认构图正常后改成：
+高清成片可选 `turbo_highres_4step`，分辨率从 `1152×640` 起，且必须设为**恰好 4 步**。宽高均需是 32 的倍数、单边介于 256–1344，总像素面积不得超过 `1344×768`。本集成支持 22–362 帧、24 fps；更长故事仍建议拆成可复用的单镜头后合并。
 
-- `quality`：20 步、50 层、无复用，推荐正式出片。
-- `reference`：50 步参考档，最慢，用于关键镜头或排查快速参数造成的差异。
-- `resource=auto`：响应感知的自适应调度，通常后台慢跑，检测到响应压力时可短暂停止；低内存机器保守使用 SSD 流式加载。
-- `resource=max`：正常优先级和权重常驻内存，电脑空闲时使用。
-
-多镜头故事给每个镜头放一组“镜头提示词 + 生成视频”，再把各生成节点的“任务目录”按顺序连接到 `H3 · 合并分镜 MP4`。完整步骤见[中文分镜教程](docs/STORYBOARD_zh-CN.md)，基础教程见 [docs/QUICKSTART_zh.md](docs/QUICKSTART_zh.md)。
+“新建/添加多图参考”节点以及 `preview / quality / reference` 档位属于可选的 h3.c BF16/Ref2VA 路线，不是推荐的 vpipe Q8 FL2VA 节点。只有安装模型选项 2 后再使用该高级工作流。完整步骤见[中文分镜教程](docs/STORYBOARD_zh-CN.md)，基础教程见 [docs/QUICKSTART_zh.md](docs/QUICKSTART_zh.md)。
 
 ## 节点
 
@@ -108,11 +103,11 @@ vpipe 节点会优先从 `PATH` 自动查找 `vpipe`，并把持久化任务票�
 
 | 资源档位 | 调度/内存行为 | 是否改变 steps/layers/reuse |
 |---|---|---|
-| low | 使用全部核心但交给 macOS 后台调度；SSD streaming；一直慢跑 | 否 |
-| auto | 进程启动时 <64 GiB 自动 streaming；使用中/电池供电时通常后台慢跑，原生响应信号或持续回退压力下暂时暂停；接电安静空闲 5 分钟后解除后台策略 | 否 |
-| max | 正常优先级、无自动暂停、权重常驻；48GB 机器可能内存紧张 | 否 |
+| low | Darwin 后台调度；vpipe 使用配置的 12/8 GiB 池上限；一直推进 | 否 |
+| auto | 同样保守启动；使用中/电池供电时后台慢跑，检测到压力暂时暂停，接电安静空闲 5 分钟后解除后台策略 | 否 |
+| max | 正常优先级和 vpipe 默认内存策略；无自动暂停，只建议电脑空闲时使用 | 否 |
 
-一个镜头启动后，内存路径就固定了。运行中把 `auto` 切成 `max` 只能解除后台调度，不能在去噪中途把 SSD 流式权重热切成常驻。支持的 M5 上，常驻路径还会启用 h3.c 默认的 INT8 投影，而 SSD streaming 使用原始 BF16 block；它们不会改变所选 steps/layers/reuse，但细节或构图可能存在轻微数值差异。
+vpipe 的内存池上限在镜头启动时固定。运行中把 `auto` 切成 `max` 只能解除后台调度，不能把当前进程按另一套启动参数重建；h3.c 的常驻/SSD streaming 路径同样在启动时确定。
 
 | 画质 | steps | layers | reuse | 适用场景 |
 |---|---:|---:|---:|---|
@@ -174,19 +169,21 @@ ComfyUI 是可视化节点画布、执行服务、API、队列、历史记录和
 
 - 自动化后端测试、shell 语法和 GitHub Actions：已验证。
 - 最新版锁定 ComfyUI 的 V3 节点注册：已验证。
-- 全新目录一键安装、h3.c Metal 编译、ComfyUI HTTP 启动和通过 `/object_info` 发现 H3 节点：已验证。
-- 使用真实锁定 H3 快照完成生成（Ref2VA 约 196 GiB 唯一 blob）：当前版本维护者环境尚未重新下载权重验证；欢迎有权重的用户反馈结果。
+- 官方 vpipe v0.1.37 DMG 的 SHA-256、Apple 代码签名、复制后应用包、helper 路径和固定提交身份：已在 Apple Silicon 上验证。
+- Q8 目录/索引/尺寸/固定版本校验与紧凑续传流程：有自动化测试，并已对现有完整 Q8 安装校验。
+- 尚未在第二台实体 M5 Pro 上从零完成一次“安装到出片”；因此项目额外提供 `Doctor.command`、首次启动日志和 worker `degraded` 明确提示，避免静默失败。
 
 ## 隐私、许可证与限制
 
-- 所有生成和素材处理均在本机完成。
+- 生成和素材处理均在本机完成。显式选择 Neural 配音是例外：台词会发送到相应在线语音服务。
 - 本仓库不包含模型、生成内容、日志或用户配置。
+- 私人工作流请放进 `private_workflows/`，或命名为 `*.private.json`；两者都已 Git 忽略。
 - 本项目代码采用 MIT License；ComfyUI、官方前端、h3.c、FFmpeg 和模型各自保留原许可证。明确的上游致谢与许可证链接见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 - MiniMax H3 权重受其 Community License 约束，下载前请自行阅读并确认。
 - 只支持 Apple Silicon macOS。
 - h3.c 要求完整原始模型目录；Ref2VA 还需要 FL2VA 基础文件。
 - Ref2VA 有序参考不能与首/尾帧锚点混用。
-- 当前只接 h3.c；未来可增加独立的 stable-diffusion.cpp 适配器。
+- 当前 vpipe Q8 集成支持首帧 FL2VA；多图有序 Ref2VA 使用 h3.c BF16。
 
 ## 开发
 

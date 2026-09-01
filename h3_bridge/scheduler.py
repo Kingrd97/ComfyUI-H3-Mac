@@ -661,16 +661,27 @@ class AdaptiveScheduler:
         )
         self._background_retry_at = float("-inf")
 
-    def start(self) -> None:
-        _atomic_json(
-            self.control_path,
-            {
-                "paused": False,
-                "policy": self.engine_profile,
-                "control_generation": 0,
-                "updated_at": time.time(),
-            },
-        )
+    def start(self, *, preserve_existing_control: bool = False) -> None:
+        with self.control_lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            existing = read_json(self.control_path) if preserve_existing_control else {}
+            if existing:
+                paused, policy, generation = self._parse_control(existing)
+                initial = {
+                    "paused": paused,
+                    "policy": policy,
+                    "control_generation": generation,
+                    "updated_at": existing.get("updated_at", time.time()),
+                }
+            else:
+                initial = {
+                    "paused": False,
+                    "policy": self.engine_profile,
+                    "control_generation": 0,
+                    "updated_at": time.time(),
+                }
+            _atomic_json(self.control_path, initial)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         self.tick(force=True)
 
     def _parse_control(

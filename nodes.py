@@ -237,7 +237,7 @@ class H3GenerateVideo(io.ComfyNode):
                 io.Combo.Input(
                     "resource_profile",
                     options=["low", "auto", "max"],
-                    default="low",
+                    default="auto",
                     display_name="Resource profile",
                 ),
                 io.Int.Input(
@@ -362,7 +362,7 @@ class H3GenerateVideoVPipe(io.ComfyNode):
                 io.Combo.Input(
                     "resource_profile",
                     options=["low", "auto", "max"],
-                    default="low",
+                    default="auto",
                     display_name="Resource profile",
                 ),
                 io.Int.Input(
@@ -620,7 +620,7 @@ class H3AddFixedNarration(io.ComfyNode):
                     "timed_script",
                     display_name="Timed dialogue",
                     multiline=True,
-                    default="0.55|大家好，我是土豆。\n5.73|下一站，出发！",
+                    default="0.55|大家好，我是旅行猫。\n5.73|下一站，出发！",
                 ),
                 io.Combo.Input(
                     "voice",
@@ -631,7 +631,7 @@ class H3AddFixedNarration(io.ComfyNode):
                         "zh-CN-XiaoyiNeural",
                         "macOS:Tingting",
                     ],
-                    default="zh-CN-YunxiNeural",
+                    default="macOS:Tingting",
                     display_name="Voice",
                 ),
                 io.Int.Input(
