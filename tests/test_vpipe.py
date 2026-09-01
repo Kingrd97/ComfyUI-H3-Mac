@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,29 @@ from h3_bridge.vpipe import (
     VPipeRunner,
     _pipeline,
     _progress_from_line,
+    _valid_video_file,
+    load_vpipe_config,
+    validate_vpipe_installation,
 )
+
+
+def test_video_cache_requires_video_stream_and_positive_duration(
+    tmp_path: Path, monkeypatch
+):
+    video = tmp_path / "result.mp4"
+    video.write_bytes(b"container")
+    monkeypatch.setattr("h3_bridge.vpipe.shutil.which", lambda _name: "/ffprobe")
+    payload = {"streams": [{"codec_type": "video"}], "format": {"duration": "1.5"}}
+    monkeypatch.setattr(
+        "h3_bridge.vpipe.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, json.dumps(payload), ""
+        ),
+    )
+
+    assert _valid_video_file(video) is True
+    payload["format"]["duration"] = "0"
+    assert _valid_video_file(video) is False
 
 
 def make_fake_vpipe(tmp_path: Path) -> tuple[Path, Path]:
@@ -34,7 +57,29 @@ def make_fake_vpipe(tmp_path: Path) -> tuple[Path, Path]:
     return binary, work_dir
 
 
-def test_vpipe_runner_materializes_silent_pipeline_and_reuses_result(tmp_path: Path):
+def test_vpipe_config_finds_user_local_bin_under_launchd_path(
+    tmp_path: Path, monkeypatch
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "config.example.json").write_text(
+        json.dumps({"vpipe_binary": "vpipe", "vpipe_work_dir": "vpipe-work"}),
+        encoding="utf-8",
+    )
+    local_binary = tmp_path / "home" / ".local" / "bin" / "vpipe"
+    local_binary.parent.mkdir(parents=True)
+    local_binary.write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("h3_bridge.vpipe.shutil.which", lambda _: None)
+
+    config = load_vpipe_config(project)
+
+    assert config.binary == local_binary.resolve()
+
+
+def test_vpipe_runner_materializes_silent_pipeline_and_reuses_result(
+    tmp_path: Path, monkeypatch
+):
     binary, work_dir = make_fake_vpipe(tmp_path)
     image = tmp_path / "cat.png"
     image.write_bytes(b"image")
@@ -46,6 +91,10 @@ def test_vpipe_runner_materializes_silent_pipeline_and_reuses_result(tmp_path: P
         enable_h3_audio=False,
     )
     updates: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "h3_bridge.vpipe._valid_video_file",
+        lambda path: path.is_file() and path.read_bytes() == b"fake-vpipe-mp4",
+    )
     runner = VPipeRunner(config)
     first = runner.run(
         request,
@@ -59,12 +108,18 @@ def test_vpipe_runner_materializes_silent_pipeline_and_reuses_result(tmp_path: P
     assert "audio-vae-decode" not in stage_ids
     save = next(stage for stage in graph["stages"] if stage["id"] == "save-video")
     assert save["config"]["enable_audio"] is False
+    assert save["config"]["video_bitrate"] == 10_000_000
     assert save["iports"] == [{"src": "rgb-to-video", "oport": 0}]
 
     second = runner.run(request, output_root=tmp_path / "output")
     assert second.reused is True
     assert second.elapsed_seconds == 0.0
     assert second.output_path == first.output_path
+
+    second.output_path.write_bytes(b"truncated-cache")
+    third = runner.run(request, output_root=tmp_path / "output")
+    assert third.reused is False
+    assert third.output_path.read_bytes() == b"fake-vpipe-mp4"
 
 
 def test_vpipe_joint_audio_pipeline_has_audio_decoder(tmp_path: Path):
@@ -94,6 +149,18 @@ def test_vpipe_joint_audio_pipeline_has_audio_decoder(tmp_path: Path):
         (
             "[NORMAL] [h3-dit] first forward at 123 rows",
             (25, "Generating video frames"),
+        ),
+        (
+            "[PROGRESS] 40% of 'denoise' completed at 00:52:14 (640/1600)",
+            (45, "Generating video frames (40%)"),
+        ),
+        (
+            "[PROGRESS] 100% of 'denoise' completed at 00:52:14 (1600/1600)",
+            (75, "Generating video frames (100%)"),
+        ),
+        (
+            "[PROGRESS] 40% of 'vae decode' completed at 00:52:14 (40/100)",
+            None,
         ),
         (
             "[INFO] GenerateVideoStage('generate-video'): emitted MiniMax-H3 latents #1",
@@ -127,14 +194,67 @@ def test_vpipe_highres_profile_selects_matching_adapter_and_shift(tmp_path: Path
     assert model_config["config"]["video_shift"] == 6.0
 
 
+def test_vpipe_pipeline_uses_configured_video_bitrate(tmp_path: Path):
+    binary, work_dir = make_fake_vpipe(tmp_path)
+    image = tmp_path / "cat.png"
+    image.write_bytes(b"image")
+    config = VPipeConfig(
+        binary=binary,
+        work_dir=work_dir,
+        video_bitrate=14_000_000,
+    )
+    request = VPipeRequest(prompt="cat", first_frame=image)
+
+    graph = _pipeline(config, request, tmp_path / "out.mp4")
+    save = next(stage for stage in graph["stages"] if stage["id"] == "save-video")
+
+    assert save["config"]["video_bitrate"] == 14_000_000
+
+
+def test_vpipe_job_cache_isolated_by_engine_generation(tmp_path: Path):
+    binary, work_dir = make_fake_vpipe(tmp_path)
+    image = tmp_path / "cat.png"
+    image.write_bytes(b"image")
+    request = VPipeRequest(prompt="cat", first_frame=image)
+    old_runner = VPipeRunner(
+        VPipeConfig(
+            binary=binary,
+            work_dir=work_dir,
+            engine_generation="vpipe-v0.1.30",
+        )
+    )
+    new_runner = VPipeRunner(
+        VPipeConfig(
+            binary=binary,
+            work_dir=work_dir,
+            engine_generation="vpipe-v0.1.37",
+        )
+    )
+
+    assert old_runner._job_id(request) != new_runner._job_id(request)
+
+
+def test_vpipe_installation_rejects_unverified_build(tmp_path: Path):
+    binary, work_dir = make_fake_vpipe(tmp_path)
+    with pytest.raises(RuntimeError, match="version mismatch"):
+        validate_vpipe_installation(
+            VPipeConfig(
+                binary=binary,
+                work_dir=work_dir,
+                expected_ref="e843a7dd44f9988499f4f17d18f6c24940c670ac",
+            )
+        )
+
+
 @pytest.mark.parametrize(
     ("request_changes", "message"),
     [
         ({"width": 650}, "multiples of 32"),
+        ({"width": 1344, "height": 1344}, "Canvas area"),
         ({"frames": 10}, "between 22 and 362"),
         ({"steps": 1}, "between 2 and 60"),
         ({"fps": 30}, "24 fps"),
-        ({"resource_profile": "auto"}, "low or max"),
+        ({"resource_profile": "eco"}, "low, auto, or max"),
         ({"adapter_profile": "unknown"}, "Adapter profile"),
         ({"adapter_profile": "turbo_highres_4step"}, "starts at 1152x640"),
         (

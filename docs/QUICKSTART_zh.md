@@ -5,31 +5,32 @@
 依次双击：
 
 1. `Install.command`
-2. `Doctor.command`
-3. `Download Model.command`
-4. 再运行一次 `Doctor.command`
-5. `Start.command`
+2. `Download Model.command`，macOS 26 新手选 `1) vpipe Q8 FL2VA`
+3. `Doctor.command`
+4. `Start.command`
 
 `Doctor.command` 只检查环境，不会加载大模型。
 
-从旧版升级时，配置 schema v2 会先保存 `config.json.v1-backup`。只有完全等于旧版随附默认值的 `background` 配置会自动迁移到 `adaptive`；自己改过的行为或阈值保持不变。
+从旧版升级时，配置 schema v4 会先保存备份；自己改过的行为、阈值与有效外部工作目录保持不变，旧的未锁定 vpipe 命令会迁到项目内已验证的二进制。
 
-启动后可在 `Comfy > Locale > Language` 选择“中文”。第一次使用建议从 `工作流 > 浏览模板 > ComfyUI-H3-Mac > H3_Beginner_2_Shot_Storyboard` 开始，不需要自己从空白画布搭节点。
+vpipe Q8 最终约 67.5 GiB（模型加两套 LoRA），首次紧凑准备建议留出至少 120 GiB。下载和量化可 Ctrl-C；重跑会续传并复用已经校验完成的阶段。48GB M5 Pro 推荐 `auto`。
 
-## 2. 素材顺序
+启动后可在 `Comfy > Locale > Language` 选择“中文”。完成推荐的 vpipe Q8 模型准备后，第一次使用建议从 `工作流 > 浏览模板 > ComfyUI-H3-Mac > H3_vpipe_Q8_2_Shot_Fixed_Voice` 开始，不需要自己从空白画布搭节点。`H3_Beginner_2_Shot_Storyboard` 属于需要额外 BF16/Ref2VA 权重的高级模板。
 
-h3.c 不理解文件名的语义，只按接入顺序看到 `<Picture 1>`、`<Picture 2>`。建议：
+## 2. 先用推荐的 vpipe Q8 模板
 
-1. 主体全身照
-2. 主体脸部/毛色特写
-3. 主要环境
-4. 次要环境或动作参考
+载入 `H3_vpipe_Q8_2_Shot_Fixed_Voice`后，每个镜头只需一张首帧图：
 
-在提示词里明确写 “The cat in Picture 1 and Picture 2”，并让环境来自 Picture 3/4。不要同时连接 Ref2VA 素材和首尾帧。
+1. 在 `Load Image` 选该镜头的首帧。
+2. 在“编写单镜头提示词”填主体、分段动作、环境和镜头。
+3. 在“使用 vpipe Q8 生成”先保留 `960×544 / 124 帧 / 6 步 / turbo_544p / auto`。
+4. 所有镜头生成后再合并 MP4；最后才加一次统一旁白。
+
+vpipe Q8 是 FL2VA 首帧路线，不使用 Picture 1/2/3 的多图参考链。“新建/添加参考素材”属于另行安装的 h3.c BF16/Ref2VA 高级路线。
 
 ## 3. 推荐提示词结构
 
-提示词按以下顺序写，通常比堆砌形容词稳定：
+每个 vpipe 单镜头的提示词按以下顺序写，通常比堆砌形容词稳定：
 
 ```text
 [主体身份和必须保持的特征]
@@ -48,7 +49,9 @@ h3.c 不理解文件名的语义，只按接入顺序看到 `<Picture 1>`、`<Pi
 
 ## 4. 两阶段创作
 
-先用 `preview + low` 生成 2～3 秒，检查主体、场景和动作方向。满意后保持 seed 不变，改为目标时长并使用 `quality + auto`。只有当你需要判断快速参数是否损伤画质时，才用 `reference`。
+先在 `turbo_544p` 保留 6 步，用较短帧数检查主体、场景和动作方向；满意后保持 seed 和提示词，再调整帧数。要做高清正式版时选 `turbo_highres_4step`，从 `1152×640` 起并设为恰好 4 步。所有 vpipe 视频固定为 24 fps，长故事用多镜头合并。
+
+`preview / quality / reference` 是 h3.c BF16 节点的档位，不适用于 vpipe Q8 节点。
 
 ## 5. 卡顿和取消
 
@@ -56,7 +59,7 @@ h3.c 不理解文件名的语义，只按接入顺序看到 `<Picture 1>`、`<Pi
 - `auto` 默认使用自适应保护：通常在后台慢跑；无需额外权限的原生 helper 发现“最近有输入 + display-link 回调间隔/age 连续异常”时会尽快暂停，强信号不可用时再根据持续的其他 CPU、WindowServer 和 GPU 压力回退判断。framebuffer age 只用于诊断，不会单独触发暂停。系统健康稳定后先后台试跑，再自动继续。
 - macOS 不能通用读取任意前台 App 的真实掉帧数；helper 观察显示系统响应，也不捕获屏幕内容。`SIGSTOP` 不能撤回已经提交的 Metal 工作，暂停也不会释放统一内存，因此目标是“尽量无感”而不是硬实时保证。
 - 模型首次加载会产生明显内存和磁盘压力，加载完成后通常更平稳。
-- ComfyUI 中断按钮会向 h3.c 进程组发送终止信号，日志和残片仍留在任务目录。
+- ComfyUI 中的“H3 后台任务”面板可暂停、继续或取消 launchd worker 接管的 vpipe 任务；日志和残片仍留在任务目录。
 - 完成的同请求会复用；中间去噪步不能恢复，这是 h3.c 当前接口限制。
 
 ## 6. 常见错误

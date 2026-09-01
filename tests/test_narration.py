@@ -7,10 +7,10 @@ from h3_bridge.narration import _edge_tts_executable, parse_timed_script
 
 def test_parse_timed_script_supports_comments_and_chinese_dialogue():
     cues = parse_timed_script(
-        "# opening\n0.55|大家好，我是土豆。\n\n5.73 | 下一站，出发！\n"
+        "# opening\n0.55|大家好，我是旅行猫。\n\n5.73 | 下一站，出发！\n"
     )
     assert [(cue.start_seconds, cue.text) for cue in cues] == [
-        (0.55, "大家好，我是土豆。"),
+        (0.55, "大家好，我是旅行猫。"),
         (5.73, "下一站，出发！"),
     ]
 

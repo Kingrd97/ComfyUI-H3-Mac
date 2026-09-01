@@ -6,7 +6,7 @@ COMFY="$PROJECT_ROOT/runtime/ComfyUI"
 PYTHON="$PROJECT_ROOT/runtime/.venv/bin/python"
 PORT="${H3_COMFY_PORT:-8188}"
 DEVICE="${H3_COMFY_DEVICE:-cpu}"
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
+export PATH="$PROJECT_ROOT/runtime/bin:$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 
 if [[ ! -x "$PYTHON" || ! -f "$COMFY/main.py" ]]; then
   printf '尚未安装，请先双击 Install.command。\n' >&2
@@ -17,10 +17,9 @@ fi
   "$PROJECT_ROOT/config.json" \
   "$PROJECT_ROOT/config.example.json"
 
-# A hard ComfyUI crash can leave its separately-sessioned H3 child running or
-# SIGSTOP'ed. Only terminate jobs with complete birth fingerprints whose exact
-# controller is provably gone; legacy/ambiguous records are left untouched.
-"$PYTHON" "$PROJECT_ROOT/scripts/h3_control.py" cleanup-orphans
+# Do not automatically terminate a separately-sessioned engine here.  vpipe
+# jobs are owned by the persistent launchd worker and intentionally survive a
+# ComfyUI restart. Verified stale jobs remain removable from H3 Control.
 
 if [[ "${H3_NO_OPEN:-0}" != "1" ]]; then
   (sleep 2; open "http://127.0.0.1:$PORT") >/dev/null 2>&1 &

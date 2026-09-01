@@ -24,7 +24,7 @@ def test_exact_legacy_default_is_backed_up_and_migrated(tmp_path: Path):
     backup = json.loads(
         (tmp_path / "config.json.v1-backup").read_text(encoding="utf-8")
     )
-    assert migrated["config_schema_version"] == 2
+    assert migrated["config_schema_version"] == 4
     assert migrated["auto_active_behavior"] == "adaptive"
     assert migrated["auto_poll_seconds"] == 0.5
     assert migrated["auto_jank_pause_seconds"] == 2
@@ -49,14 +49,14 @@ def test_custom_legacy_policy_is_preserved(tmp_path: Path):
     assert migrate(config_path, EXAMPLE) == "migrated-custom"
 
     migrated = json.loads(config_path.read_text(encoding="utf-8"))
-    assert migrated["config_schema_version"] == 2
+    assert migrated["config_schema_version"] == 4
     assert migrated["auto_active_behavior"] == "background"
     assert migrated["auto_poll_seconds"] == 2
     assert migrated["auto_max_external_cpu_percent"] == 80
     assert migrated["auto_jank_pause_seconds"] == 2
 
 
-def test_schema_two_migration_is_idempotent(tmp_path: Path):
+def test_current_schema_migration_is_idempotent(tmp_path: Path):
     config_path = tmp_path / "config.json"
     current = json.loads(EXAMPLE.read_text(encoding="utf-8"))
     current["auto_active_behavior"] = "pause"
@@ -65,6 +65,47 @@ def test_schema_two_migration_is_idempotent(tmp_path: Path):
     assert migrate(config_path, EXAMPLE) == "unchanged"
     assert json.loads(config_path.read_text(encoding="utf-8")) == current
     assert not (tmp_path / "config.json.v1-backup").exists()
+
+
+def test_schema_two_default_vpipe_path_moves_inside_project_when_absent(
+    tmp_path: Path, monkeypatch
+):
+    config_path = tmp_path / "config.json"
+    current = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+    current["config_schema_version"] = 2
+    current["vpipe_binary"] = "vpipe"
+    current["vpipe_work_dir"] = "~/workspace/github/vpipe-work"
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    write_json(config_path, current)
+
+    assert migrate(config_path, EXAMPLE) == "migrated-custom"
+
+    migrated = json.loads(config_path.read_text(encoding="utf-8"))
+    assert migrated["config_schema_version"] == 4
+    assert migrated["vpipe_binary"] == "runtime/bin/vpipe"
+    assert migrated["vpipe_work_dir"] == "runtime/vpipe-work"
+    assert (tmp_path / "config.json.v2-backup").is_file()
+
+
+def test_existing_legacy_work_keeps_assets_but_uses_verified_binary(
+    tmp_path: Path, monkeypatch
+):
+    config_path = tmp_path / "config.json"
+    current = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+    current["config_schema_version"] = 3
+    current["vpipe_binary"] = "vpipe"
+    current["vpipe_work_dir"] = "~/workspace/github/vpipe-work"
+    fake_home = tmp_path / "home"
+    (fake_home / "workspace/github/vpipe-work").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    write_json(config_path, current)
+
+    assert migrate(config_path, EXAMPLE) == "migrated-custom"
+
+    migrated = json.loads(config_path.read_text(encoding="utf-8"))
+    assert migrated["config_schema_version"] == 4
+    assert migrated["vpipe_binary"] == "runtime/bin/vpipe"
+    assert migrated["vpipe_work_dir"] == "~/workspace/github/vpipe-work"
 
 
 def test_existing_backup_is_not_overwritten(tmp_path: Path):

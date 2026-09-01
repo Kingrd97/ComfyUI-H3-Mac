@@ -23,9 +23,11 @@ _GPU_RE = re.compile(r'"Device Utilization %"\s*=\s*(\d+(?:\.\d+)?)')
 _MEMORY_FREE_RE = re.compile(
     r"System-wide memory free percentage:\s*(\d+(?:\.\d+)?)%"
 )
+_MEMORY_TOTAL_RE = re.compile(r"The system has\s+(\d+)\s+\(")
 _SWAP_USED_RE = re.compile(r"\bused\s*=\s*(\d+(?:\.\d+)?)([KMG])", re.I)
 _VM_PAGE_SIZE_RE = re.compile(r"page size of\s+(\d+) bytes", re.I)
 _VM_PAGEOUT_RE = re.compile(r"^Pageouts:\s*(\d+)\.?$", re.M)
+_VM_WIRED_RE = re.compile(r"^Pages wired down:\s*(\d+)\.?$", re.M)
 _VALID_POLICIES = {"low", "auto", "max"}
 _THERMAL_STATES = {"nominal", "fair", "serious", "critical"}
 _MIB = 1024 * 1024
@@ -44,6 +46,8 @@ class ResourceHealth:
     memory_free_percent: float | None = None
     swap_used_bytes: int | None = None
     pageout_bytes: int | None = None
+    wired_bytes: int | None = None
+    physical_memory_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -518,6 +522,10 @@ def resource_health() -> ResourceHealth:
     memory_free_percent = (
         float(memory_match.group(1)) if memory_match is not None else None
     )
+    total_match = _MEMORY_TOTAL_RE.search(pressure_output)
+    physical_memory_bytes = (
+        int(total_match.group(1)) if total_match is not None else None
+    )
 
     swap_match = _SWAP_USED_RE.search(swap_output)
     swap_used_bytes: int | None = None
@@ -534,7 +542,19 @@ def resource_health() -> ResourceHealth:
         if page_size_match is not None and pageout_match is not None
         else None
     )
-    return ResourceHealth(memory_free_percent, swap_used_bytes, pageout_bytes)
+    wired_match = _VM_WIRED_RE.search(vm_output)
+    wired_bytes = (
+        int(page_size_match.group(1)) * int(wired_match.group(1))
+        if page_size_match is not None and wired_match is not None
+        else None
+    )
+    return ResourceHealth(
+        memory_free_percent=memory_free_percent,
+        swap_used_bytes=swap_used_bytes,
+        pageout_bytes=pageout_bytes,
+        wired_bytes=wired_bytes,
+        physical_memory_bytes=physical_memory_bytes,
+    )
 
 
 @dataclass(frozen=True)
@@ -641,16 +661,27 @@ class AdaptiveScheduler:
         )
         self._background_retry_at = float("-inf")
 
-    def start(self) -> None:
-        _atomic_json(
-            self.control_path,
-            {
-                "paused": False,
-                "policy": self.engine_profile,
-                "control_generation": 0,
-                "updated_at": time.time(),
-            },
-        )
+    def start(self, *, preserve_existing_control: bool = False) -> None:
+        with self.control_lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            existing = read_json(self.control_path) if preserve_existing_control else {}
+            if existing:
+                paused, policy, generation = self._parse_control(existing)
+                initial = {
+                    "paused": paused,
+                    "policy": policy,
+                    "control_generation": generation,
+                    "updated_at": existing.get("updated_at", time.time()),
+                }
+            else:
+                initial = {
+                    "paused": False,
+                    "policy": self.engine_profile,
+                    "control_generation": 0,
+                    "updated_at": time.time(),
+                }
+            _atomic_json(self.control_path, initial)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         self.tick(force=True)
 
     def _parse_control(

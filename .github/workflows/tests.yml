@@ -28,6 +28,8 @@ jobs:
           -o "$RUNNER_TEMP/h3-guardian"
       - name: Check every shell script
         run: |
-          for file in Install.command Start.command "Download Model.command" Doctor.command scripts/*.sh; do
+          for file in *.command scripts/*.sh; do
             bash -n "$file"
           done
+      - name: Check custom task-panel JavaScript
+        run: node --check web/*.js

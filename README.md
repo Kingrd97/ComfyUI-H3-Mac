@@ -4,40 +4,42 @@
 
 [![tests](https://github.com/Kingrd97/ComfyUI-H3-Mac/actions/workflows/tests.yml/badge.svg)](https://github.com/Kingrd97/ComfyUI-H3-Mac/actions/workflows/tests.yml)
 
-A beginner-friendly bridge between the official [ComfyUI](https://github.com/Comfy-Org/ComfyUI) visual workflow system and MiniMax H3 Metal backends on Apple Silicon Macs. It supports [antirez/h3.c](https://github.com/antirez/h3.c) plus an optional vpipe Q8 FL2VA backend, native English/Chinese nodes, structured shot prompts, storyboard assembly, one fixed post-production voice, persistent jobs, and MP4 output.
+A beginner-friendly bridge between the official [ComfyUI](https://github.com/Comfy-Org/ComfyUI) visual workflow system and MiniMax H3 Metal backends on Apple Silicon Macs. On macOS 26 it installs a pinned, signed [vpipe](https://github.com/tgo-app-dev/vpipe) Q8 FL2VA backend; it also includes [antirez/h3.c](https://github.com/antirez/h3.c) for advanced original-weight workflows. The project provides native English/Chinese nodes, structured shot prompts, storyboard assembly, fixed post-production narration, persistent jobs, and MP4 output.
 
 > This is an early release. h3.c is evolving quickly; this project prioritizes reproducible installation, explicit reference ordering, cancellation, and inspectable jobs.
 
 ## What it provides
 
 - ComfyUI for visual workflow composition, reusable assets, and parameter management.
+- A pinned official vpipe build and a resumable, verified Q8 preparation path for the recommended 24/48 GB workflow.
 - h3.c for native MiniMax H3 weights, Metal inference, and MP4 encoding.
 - `low / auto / max` resource profiles that keep generation settings explicit; auto normally progresses at background priority, temporarily pauses when the native responsiveness guardian or sustained fallback metrics detect pressure, and removes that policy after a sustained idle period on AC power.
 - English and Simplified Chinese node names, fields, descriptions, and tooltips through ComfyUI's native locale system.
 - A six-field shot prompt builder and lossless 2–8-shot MP4 storyboard assembly.
 - A job directory containing the request, progress, engine log, partial output, and final video.
+- Per-user launchd services keep both ComfyUI and a durable vpipe queue worker alive. A vpipe shot is owned by the worker, so closing or restarting ComfyUI does not kill the Metal process.
 - Reuse of an identical completed request after a restart or accidental rerun.
 - Explicit model-license acknowledgement; model files are never committed to Git.
 
 ## Requirements
 
-- An Apple Silicon Mac. h3.c is currently optimized and tested mainly on M3 Max and M5 Max.
-- macOS 15 or newer, Homebrew, and Xcode or Xcode Command Line Tools that provide macOS SDK 26 or newer. The pinned h3.c revision uses runtime Metal APIs introduced in macOS 15 and SDK symbols introduced in SDK 26; the installer checks both separately and builds with an explicit 15.0 deployment target instead of inheriting the current SDK version.
-- A fast SSD with substantial free space.
-- FL2VA is about 134 GiB. FL2VA plus Ref2VA is about 268 GiB as a logical tree, but the pinned content-addressed downloader stores identical blobs once: about 196 GiB physically. Start with at least 220 GiB free; the downloader performs an exact revision-aware preflight before writing.
+- An Apple Silicon Mac. The recommended vpipe route requires **macOS 26 or newer**; the installer refuses an incompatible binary instead of attempting to run it. h3.c itself supports macOS 15+, but the pinned source build still needs Xcode or Command Line Tools with macOS SDK 26.
+- Homebrew and a fast SSD with substantial free space.
+- Recommended vpipe Q8: about 65 GiB for the final Q8 model plus about 2.5 GiB for both Turbo LoRAs. Its compact two-stage conversion needs about 120 GiB free the first time, deletes each temporary BF16 stage after verification, and can resume downloads after Ctrl-C.
+- Advanced h3.c BF16: FL2VA is about 134 GiB; FL2VA + Ref2VA uses about 196 GiB physically through the pinned content-addressed cache. Start with 150 or 220 GiB free respectively.
 
-A 48 GB M5 Pro should start with `auto`. With the current conservative memory rule it uses h3.c `--ssd-streaming` below 64 GiB and normally keeps H3 at Darwin background priority while the Mac is in use or on battery. A native helper watches recent input plus consecutively abnormal display-link callback gaps or callback age and triggers the fast pause path when both indicate display-service trouble. It needs neither Accessibility nor Screen Recording permission and does not capture the screen. Main-display framebuffer age is recorded for diagnosis only and never triggers Pause by itself. If the strong display-link signal is unavailable, sustained non-H3 CPU or combined WindowServer/GPU pressure provides a fallback. `auto` also pauses on critical memory/swap/pageout or thermal pressure, and blocks idle-max during Low Power Mode or marginal recovery. After 15 healthy seconds auto performs a 20-second background probe; if pressure does not return, background generation continues. After five AC-powered idle minutes, a fresh low external-CPU sample and settled WindowServer/display signals allow auto to remove the background policy. These controls remain best-effort; `taskpolicy` is not a hard GPU quota.
+A 48 GB M5 Pro should use vpipe Q8 with `auto`. It avoids the original-weight h3.c streaming path and normally advances at Darwin background priority while the Mac is in use or on battery. A native helper watches recent input plus consecutively abnormal display-link callback gaps or callback age and triggers the fast pause path when both indicate display-service trouble. It needs neither Accessibility nor Screen Recording permission and does not capture the screen. Main-display framebuffer age is recorded for diagnosis only and never triggers Pause by itself. If the strong display-link signal is unavailable, sustained non-H3 CPU or combined WindowServer/GPU pressure provides a fallback. `auto` also pauses on critical memory/swap/pageout or thermal pressure. After healthy recovery it probes in the background, and after five quiet AC-powered idle minutes it removes the background policy. These controls remain best-effort; `taskpolicy` is not a hard GPU quota.
 
 macOS does not expose a universal frame-drop counter for arbitrary foreground applications. The guardian observes display-system responsiveness rather than another app's renderer, so even its native signal and fallback metrics are best-effort rather than hard real-time. `SIGSTOP` cannot retract Metal work already submitted to the GPU and does not release loaded weights from unified memory.
 
-The 64 GiB boundary is a safety heuristic, not an h3.c requirement. The pinned engine reports roughly 40.1 GB peak physical footprint for complex resident Ref2VA examples, so 48 GB plus foreground applications can be tight. SSD streaming greatly lowers DiT residency but is an explicit tradeoff: it performs large read-only, uncached model reads and can contend for disk bandwidth. It does not rewrite the model or consume SSD write-endurance as if those reads were writes. See [resource control](docs/RESOURCE_CONTROL.md) before forcing resident mode.
+For the advanced h3.c route, the 64 GiB boundary is a safety heuristic rather than an engine requirement. The pinned engine reports roughly 40.1 GB peak physical footprint for complex resident Ref2VA examples, so 48 GB plus foreground applications can be tight. SSD streaming lowers DiT residency but performs large read-only model reads and can contend for disk bandwidth. See [resource control](docs/RESOURCE_CONTROL.md) before forcing resident mode.
 
 ## One-click installation
 
 1. Download or clone this repository.
 2. Double-click `Install.command`. If Gatekeeper blocks it, right-click → Open; do not disable macOS security protections.
-3. Double-click `Download Model.command`; beginners should choose `1) Ref2VA`.
-4. Double-click `Start.command` and wait for `http://127.0.0.1:8188` to open. Select `Comfy > Locale > Language` to switch between English and Chinese.
+3. Double-click `Download Model.command`; beginners on macOS 26 should choose `1) vpipe Q8 FL2VA`.
+4. The installer starts persistent ComfyUI and vpipe launchd services. Double-click `Start.command` to verify them and open `http://127.0.0.1:8188`. Select `Comfy > Locale > Language` to switch between English and Chinese.
 
 Command-line equivalent:
 
@@ -49,45 +51,41 @@ cd ComfyUI-H3-Mac
 ./Start.command
 ```
 
-ComfyUI, h3.c, the Python virtual environment, and models live under `runtime/`, so the installation is self-contained. Validated upstream revisions are pinned in `versions.env` instead of tracking unpredictable future main branches.
+For a fresh installation, ComfyUI, the pinned vpipe app bundle, h3.c, Python environments, the vpipe work directory, and models all live under `runtime/`. Choose the project's final location before preparing Q8. If you later move the directory, rerun `Install.command` and then `Prepare vpipe Q8.command low`; intact weights are reused while launchd paths, symlinks, and vpipe's model registry are rewritten. Validated upstream revisions and the official vpipe DMG checksum are pinned in `versions.env` instead of tracking unpredictable future main branches.
 
 Model downloading uses a separate pinned Python environment, so its Hugging Face client cannot change ComfyUI's dependencies. The exposed `runtime/models/MiniMax-H3` path is a relative link into a content-addressed cache inside the same `runtime/` tree; moving the whole project preserves it. A completed manifest records every expected path, size, blob identity, and model revision. `Doctor.command` checks that manifest and then asks h3.c to inspect the model with `--info`.
 
-Configuration schema v2 has a conservative one-time upgrade path. A legacy configuration is first backed up as `config.json.v1-backup`. Only a file that still exactly matches the former shipped `background` defaults is moved to the new `adaptive` behavior; customized behavior or thresholds are preserved.
+Configuration schema v4 has a conservative one-time upgrade path. A legacy configuration is backed up before migration; customized resource thresholds and existing external vpipe work directories are preserved, while the old unpinned `vpipe` executable default moves to the verified project-local binary.
 
-`Start.command` intentionally runs the ComfyUI control plane with PyTorch on CPU. This does **not** disable Metal generation: the H3 node starts the separately compiled h3.c binary, which still performs inference with Metal. This default avoids unnecessary unified-memory use and PyTorch device-detection failures. If you also use other ComfyUI nodes that require MPS, start with `H3_COMFY_DEVICE=auto ./Start.command`.
+`Start.command` installs/checks the launchd services and opens the UI; it does not duplicate an already running server. The launchd program intentionally runs the ComfyUI control plane with PyTorch on CPU. This does **not** disable Metal generation: the H3 node starts a separate Metal engine. This default avoids unnecessary unified-memory use and PyTorch device-detection failures. For foreground diagnostics use `H3_FOREGROUND=1 H3_COMFY_DEVICE=auto ./Start.command`.
 
 The pinned official ComfyUI frontend has native localization. Browser language is used on first launch; `Comfy > Locale > Language` changes it later. H3 node translations follow that setting without a third-party translation patch.
 
-For the easiest start, open `Workflow > Browse Templates`, choose `ComfyUI-H3-Mac`, and load `H3_Beginner_2_Shot_Storyboard`. The canvas is already grouped into references, Shot 1, Shot 2, and final MP4 assembly.
+For the easiest start after preparing model option 1, open `Workflow > Browse Templates`, choose `ComfyUI-H3-Mac`, and load `H3_vpipe_Q8_2_Shot_Fixed_Voice`. The canvas is already grouped into references, Shot 1, Shot 2, final MP4 assembly, and one consistent narration pass. `H3_Beginner_2_Shot_Storyboard` is the advanced h3.c BF16/Ref2VA template and requires model option 2 plus substantially more disk and unified memory.
 
 ## First workflow
 
 ### Recommended vpipe Q8 workflow
 
-Load `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json` when vpipe and the Q8 FL2VA model are already installed. Each `H3 · Generate with vpipe Q8` node renders a silent shot from a first-frame image; `H3 · Assemble storyboard MP4` joins the shots; `H3 · Add one fixed narration voice` then applies every `seconds|dialogue` cue with one voice. The recommended `zh-CN-YunxiNeural` voice is substantially more natural but requires internet; `macOS:Tingting` is the offline fallback. `Keep ambience` defaults off so the original H3 voice is completely discarded.
+After model option 1 completes, load `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json`. Each `H3 · Generate with vpipe Q8` node renders a silent shot from a first-frame image; `H3 · Assemble storyboard MP4` joins the shots; `H3 · Add one fixed narration voice` applies every `seconds|dialogue` cue after assembly. The public template defaults to the offline `macOS:Tingting` voice. Neural voices are opt-in and send dialogue text to their online speech service. `Keep ambience` defaults off so independently generated H3 voices cannot overlap the final narration.
 
-The vpipe node auto-detects `vpipe` on `PATH`. Override `vpipe_binary`, `vpipe_work_dir`, model, LoRA, and low-power resident-pool limits in `config.json` when needed. This optional backend does not change the pinned h3.c installation path.
+The node uses the project-local verified vpipe build first and submits durable tickets to a launchd-owned worker instead of making vpipe a disposable ComfyUI child. The worker stays online in a clear `degraded` state until the complete Q8 model and both pinned LoRAs pass verification. Advanced users can override paths and low-power memory-pool limits in `config.json`.
 
-Add and connect these nodes in ComfyUI:
+The shortest manual vpipe graph is:
 
-1. `Load Image` for the subject.
-2. `H3 · New Reference List` (`H3 · 新建参考素材列表` in the current UI).
-3. `H3 · Add Image Reference`, connected to both previous nodes.
-4. Chain more reference nodes as needed. Their connection order becomes Picture 1, Picture 2, and so on.
-5. Optional: add `H3 · Build Shot Prompt`, fill the storyboard fields, and connect its output to the generator's Prompt input.
-6. `H3 · Generate Video (Metal)`. Start with `quality=preview` and `resource=low` for a smoke test.
+1. `Load Image` for the shot's first frame.
+2. Optional `H3 · Build Shot Prompt`; connect its text output to the generator.
+3. `H3 · Generate with vpipe Q8 (Metal)`; connect the image to `First-frame reference`.
+4. For a story, repeat the prompt/image/generator group and feed each `Job directory` to `H3 · Assemble storyboard MP4` in timeline order.
+5. Add `H3 · Add one fixed narration voice` only after assembly, so every shot uses one voice.
 
-The normal single-shot limit is 5 seconds on lower-memory Macs. Build longer videos as multiple reusable shots and assemble them without re-encoding. h3.c mechanically supports up to 362 frames (about 15.08 seconds), but jobs above 5 seconds are allowed only on Macs with at least 64 GiB, or with the explicit expert override `H3_ALLOW_LARGE_JOB=1`; long VAE decode has shown extreme swap growth on memory-constrained systems.
+The public template uses `960×544`, 124 frames, six Turbo steps, silent generation, and `resource=auto`. This is the recommended first run. `auto` remains background-friendly while the Mac is in use, pauses on sustained response pressure, and returns to normal priority after sustained idle on AC power. Use `max` only when the machine is otherwise idle.
 
-After validating composition, use:
+For a higher-resolution final, select `turbo_highres_4step`, use at least `1152×640`, and set **exactly four steps**. Width and height must be multiples of 32, each between 256 and 1344; total canvas area may not exceed `1344×768`. This integration accepts 22–362 frames at 24 fps. Longer stories should still be split into reusable shots and assembled afterward.
 
-- `quality`: 20 steps, all 50 layers, no reuse; recommended for normal output.
-- `reference`: 50-step slow reference for important shots or quality diagnosis.
-- `resource=auto`: response-aware adaptive scheduling and conservative streaming on lower-memory Macs; it normally background-runs but can temporarily pause under detected contention.
-- `resource=max`: normal priority and resident weights when the Mac is idle and has enough memory.
+The ordered multi-image reference nodes and the `preview / quality / reference` profiles below belong to the optional h3.c BF16/Ref2VA path, not the recommended vpipe Q8 FL2VA node. See the advanced h3.c workflow only after installing model option 2.
 
-For a multi-shot story, use one prompt/generator pair per shot, then connect each generator's `Job directory` output to `H3 · Assemble Storyboard MP4`. See the [storyboard tutorial](docs/STORYBOARD.md).
+See the [storyboard tutorial](docs/STORYBOARD.md) for shot planning and assembly.
 
 ## Nodes
 
@@ -107,11 +105,11 @@ For a multi-shot story, use one prompt/generator pair per shot, then connect eac
 
 | Resource | Scheduling and memory | Changes steps/layers/reuse? |
 |---|---|---|
-| low | All cores remain available but macOS schedules them as background work; SSD streaming; always progresses | No |
-| auto | Streaming below 64 GiB at process start; normally background while in use/on battery; temporary pause on native responsiveness or sustained fallback pressure; normal policy after five quiet AC-powered idle minutes | No |
-| max | Normal priority, no automatic pause, resident weights; may be tight on a 48 GB Mac | No |
+| low | Darwin background scheduling; vpipe uses its configured 12/8 GiB pool caps; always progresses | No |
+| auto | Same conservative vpipe launch caps; background while in use/on battery, temporary pause under measured pressure, normal policy after five quiet AC-powered idle minutes | No |
+| max | Normal priority and vpipe defaults; no automatic pause; use only while the Mac is idle | No |
 
-The memory path is fixed when a shot starts. Switching a running job from `auto` to `max` removes background scheduling but cannot turn its SSD-streamed weights into resident weights mid-denoise. On supported M5 hardware, the resident path also enables h3.c's default INT8 projections, while SSD streaming uses original BF16 blocks; this does not alter the selected steps/layers/reuse, but the two arithmetic paths can differ slightly in fine detail or framing.
+The vpipe pool limits are fixed when a shot starts. Switching a running job from `auto` to `max` removes background scheduling but cannot recreate that process with different launch-time memory caps. For h3.c, the selected resident/SSD-streaming path is likewise fixed at launch.
 
 | Quality | steps | layers | reuse | Intended use |
 |---|---:|---:|---:|---|
@@ -128,12 +126,15 @@ Each request receives a deterministic job ID:
 output/h3-jobs/<job-id>/
 ├── request.json
 ├── progress.json
+├── vpipe-status.json  # vpipe jobs
 ├── engine.log
 ├── result.partial.mp4
 └── result.mp4
 ```
 
-An identical completed request can be reused. h3.c does not currently export denoising-step state, so a run cannot resume exactly from step 12/20. Cancellation preserves logs and the partial file, although an unfinished MP4 may not be playable.
+An identical completed request can be reused. The vpipe worker survives a ComfyUI restart, and launchd restarts the worker if the controller itself exits; it reattaches to an exact surviving process group. After each vpipe engine exit, the worker cools down for 90 seconds by default. It starts the next shot only after public macOS memory headroom, wired-memory share, and swap/pageout growth remain healthy for three consecutive samples. If vpipe still refuses safely because wired Metal memory is short, the worker retains the identical prompt, reference, seed, geometry, and frame count and retries it once after another cooldown. The wait is recorded in `vpipe-status.json`; no Metal process runs during that wait and the queued shot can be cancelled.
+
+Neither engine currently exports denoising-step state, so an engine process that actually dies cannot resume exactly from step 12/20. This retry restarts only the failed shot with identical settings; it is not a denoising checkpoint. Cancellation preserves logs and the partial file, although an unfinished MP4 may not be playable.
 
 Double-click `H3 Control.command` to inspect, pause, resume, or change the scheduling policy of active jobs. The same controls are available from a shell:
 
@@ -145,7 +146,14 @@ Double-click `H3 Control.command` to inspect, pause, resume, or change the sched
 ./H3\ Control.command max
 ```
 
-Pause/resume uses macOS `SIGSTOP/SIGCONT`: loaded weights and process state remain in RAM, so resuming does not reload or repeat completed CPU-side progress. This does not free unified memory, cannot revoke a Metal command buffer already committed to the GPU, is not a serialized checkpoint, and cannot survive process exit or reboot. See [resource control](docs/RESOURCE_CONTROL.md).
+These controls apply to registered h3.c **and vpipe** jobs. Pause/resume uses macOS `SIGSTOP/SIGCONT`: loaded weights and process state remain in RAM, so resuming does not reload or repeat completed CPU-side progress. This does not free unified memory, cannot revoke a Metal command buffer already committed to the GPU, is not a serialized checkpoint, and cannot survive engine exit or reboot. Use `resource=auto` for background progress with temporary pause when sustained foreground jank is detected. See [resource control](docs/RESOURCE_CONTROL.md).
+
+Service supervision is separate from inference control:
+
+```bash
+./Service\ Control.command status
+./Service\ Control.command restart --worker-only
+```
 
 Assembled projects are stored in `output/h3-storyboards/<storyboard-id>/`. If a later shot fails, completed shot jobs remain reusable.
 
@@ -163,19 +171,21 @@ The pinned h3.c revision already selects its native resident INT8 MLP/QKV/attent
 
 - Automated backend tests, shell syntax, and GitHub Actions: verified.
 - V3 node registration against the pinned ComfyUI revision: verified.
-- Clean one-click install, h3.c Metal build, ComfyUI HTTP startup, and H3 node discovery through `/object_info`: verified.
-- End-to-end generation with the real pinned H3 snapshot (about 196 GiB of unique blobs for Ref2VA): not re-verified in the current maintainer environment because the weights were intentionally not downloaded again. Reports from users with the model are welcome.
+- Official vpipe v0.1.37 DMG checksum, Apple code signature, copied bundle, helper path, and pinned commit identity: verified on Apple Silicon.
+- Q8 layout/index/size/immutable-revision verification and resumable compact preparation logic: covered by automated tests and checked against an existing complete Q8 installation.
+- A full zero-to-video installation on a second physical M5 Pro Mac has not yet been completed; `Doctor.command`, first-start diagnostics, and actionable worker degradation are included specifically to make any remaining machine-specific issue visible.
 
 ## Privacy, licenses, and limitations
 
-- Media processing and generation stay local.
+- Media processing and generation stay local. Selecting a Neural narration voice is the explicit exception: its dialogue text is sent to the corresponding online speech service.
 - Models, generated media, logs, runtime files, and user configuration are Git-ignored.
+- Put personal reusable graphs under `private_workflows/` or name them `*.private.json`; both patterns are Git-ignored.
 - This bridge is MIT-licensed; ComfyUI, its official frontend, h3.c, FFmpeg, and the model retain their own licenses. See [THIRD_PARTY.md](THIRD_PARTY.md) for explicit upstream attribution.
 - MiniMax H3 weights require acceptance of the MiniMax H3 Community License.
 - Apple Silicon macOS only.
 - h3.c requires the original directory layout. Ref2VA also requires the FL2VA base files.
 - Ordered Ref2VA references cannot be mixed with first/last-frame anchors.
-- The current backend is h3.c only. A future stable-diffusion.cpp adapter should remain a distinct backend because its formats and capabilities differ.
+- vpipe Q8 currently supports first-frame FL2VA in this bridge; use h3.c BF16 for ordered multi-reference Ref2VA workflows.
 
 ## Development
 

@@ -18,18 +18,30 @@ TASK="${1:-}"
 if [[ -z "$TASK" ]]; then
   printf '%s\n' \
     "选择模型任务：" \
-    "  1) Ref2VA（推荐：图片/视频/音频参考生成视频）" \
-    "  2) FL2VA（首尾帧生成视频）"
-  read -r -p "输入 1 或 2: " choice
+    "  1) vpipe Q8 FL2VA（推荐：约 65 GiB，适合 24/48GB Mac）" \
+    "  2) h3.c Ref2VA BF16（高级：约 196 GiB，可用多参考素材）" \
+    "  3) h3.c FL2VA BF16（高级：约 134 GiB）"
+  read -r -p "输入 1、2 或 3: " choice
   case "$choice" in
-    1) TASK="Ref2VA" ;;
-    2) TASK="FL2VA" ;;
+    1) TASK="VPipeQ8" ;;
+    2) TASK="Ref2VA" ;;
+    3) TASK="FL2VA" ;;
     *) printf '无效选择。\n' >&2; exit 1 ;;
   esac
 fi
-[[ "$TASK" == "Ref2VA" || "$TASK" == "FL2VA" ]] || { printf '任务只能是 Ref2VA 或 FL2VA。\n' >&2; exit 1; }
+case "$TASK" in
+  VPipeQ8|vpipe-q8|Q8) TASK="VPipeQ8" ;;
+  Ref2VA|FL2VA) ;;
+  *) printf '任务只能是 VPipeQ8、Ref2VA 或 FL2VA。\n' >&2; exit 1 ;;
+esac
 
-if [[ "$TASK" == "Ref2VA" ]]; then
+if [[ "$TASK" == "VPipeQ8" ]]; then
+  printf '%s\n' \
+    "" \
+    "vpipe Q8 最终约 65 GiB，另含约 2.5 GiB 的 544p/768p Turbo LoRA；" \
+    "紧凑准备流程会分阶段量化并清理 BF16 临时文件，首次建议至少预留 120 GiB。" \
+    "下载与量化可以 Ctrl-C 中断；重跑会续传并复用已完成阶段。"
+elif [[ "$TASK" == "Ref2VA" ]]; then
   printf '%s\n' \
     "" \
     "Ref2VA 需要 FL2VA 基础文件。两个目录逻辑总量约 268 GiB；" \
@@ -40,6 +52,11 @@ fi
 printf '模型受 MiniMax H3 Community License 约束：%s\n' "$LICENSE_URL"
 read -r -p "确认你已阅读并同意该模型许可证？输入 AGREE 继续: " consent
 [[ "$consent" == "AGREE" ]] || { printf '已取消。\n'; exit 0; }
+
+if [[ "$TASK" == "VPipeQ8" ]]; then
+  export H3_MODEL_LICENSE_ACCEPTED=1
+  exec "$PROJECT_ROOT/scripts/prepare_vpipe_q8.sh" "${H3_MODEL_PREP_MODE:-low}"
+fi
 
 installed_hub_version="$("$VENV/bin/python" -c 'import huggingface_hub; print(huggingface_hub.__version__)' 2>/dev/null || true)"
 if [[ "$installed_hub_version" != "$HUGGINGFACE_HUB_VERSION" ]]; then

@@ -90,7 +90,7 @@
       "frames": {"name": "帧数", "tooltip": "124 帧在 24 FPS 下约为 5.18 秒。"},
       "steps": {"name": "步数", "tooltip": "Turbo LoRA 的推荐配方为 6 步，更多步数不一定更好。"},
       "audio_mode": {"name": "声音模式", "tooltip": "推荐静音，合并后统一配音；H3 联合声音可能在不同镜头改变音色。"},
-      "resource_profile": {"name": "资源档位", "tooltip": "low 使用后台任务策略并限制常驻池；max 直接全速运行 vpipe。"},
+      "resource_profile": {"name": "资源档位", "tooltip": "low 始终按后台优先级推进；auto 通常后台运行、检测到前台卡顿时暂停、持续空闲后满速；max 使用正常优先级。"},
       "seed": {"name": "随机种子", "tooltip": "迭代同一镜头时固定种子以便比较。"},
       "reuse_completed": {"name": "复用相同的已完成任务", "tooltip": "相同任务已有有效成片时跳过推理。"},
       "adapter_profile": {"name": "Turbo 分辨率适配器", "tooltip": "1152×640 或更高分辨率使用 turbo_highres_4step，并固定为 4 步；常规分辨率使用 turbo_544p。"}
@@ -127,9 +127,9 @@
     "inputs": {
       "storyboard_dir": {"name": "分镜项目目录", "tooltip": "连接“合并分镜 MP4”输出的分镜项目目录。"},
       "timed_script": {"name": "定时台词", "tooltip": "每行填写“绝对秒数|台词”，秒数对应合并后成片时间。"},
-      "voice": {"name": "音色", "tooltip": "推荐自然年轻男声 Yunxi Neural；macOS Tingting 是离线备用音色。"},
+      "voice": {"name": "音色", "tooltip": "macOS Tingting 全程离线；Neural 音色为可选项且需要联网。"},
       "rate": {"name": "语速", "tooltip": "每分钟词数；180 适合作为自然语速起点。"},
-      "pitch_hz": {"name": "音高调整（Hz）", "tooltip": "+4 Hz 会让土豆的声音稍轻快，但不会过度卡通化。"},
+      "pitch_hz": {"name": "音高调整（Hz）", "tooltip": "+4 Hz 会让示例旅行猫的声音稍轻快，但不会过度卡通化。"},
       "keep_ambience": {"name": "保留消除中央人声后的环境声", "tooltip": "默认关闭，可彻底移除 H3 原声；只有原素材具备可分离的干净立体声环境时才开启。"}
     },
     "outputs": {

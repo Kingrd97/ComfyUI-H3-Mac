@@ -2,3 +2,4 @@
 # Model-download tooling has a separate runtime/model-tools-venv so it cannot
 # change ComfyUI's transitive Python dependencies.
 edge-tts==7.2.8
+lmdb==2.3.0

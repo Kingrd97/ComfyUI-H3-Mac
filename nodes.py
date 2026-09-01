@@ -237,7 +237,7 @@ class H3GenerateVideo(io.ComfyNode):
                 io.Combo.Input(
                     "resource_profile",
                     options=["low", "auto", "max"],
-                    default="low",
+                    default="auto",
                     display_name="Resource profile",
                 ),
                 io.Int.Input(
@@ -352,7 +352,7 @@ class H3GenerateVideoVPipe(io.ComfyNode):
                 io.Int.Input("width", default=960, min=256, max=1344, step=32, display_name="Width"),
                 io.Int.Input("height", default=544, min=256, max=1344, step=32, display_name="Height"),
                 io.Int.Input("frames", default=124, min=22, max=362, step=17, display_name="Frames"),
-                io.Int.Input("steps", default=6, min=1, max=60, step=1, display_name="Steps"),
+                io.Int.Input("steps", default=6, min=2, max=60, step=1, display_name="Steps"),
                 io.Combo.Input(
                     "audio_mode",
                     options=["silent_for_fixed_tts", "h3_joint_audio"],
@@ -361,8 +361,8 @@ class H3GenerateVideoVPipe(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "resource_profile",
-                    options=["low", "max"],
-                    default="low",
+                    options=["low", "auto", "max"],
+                    default="auto",
                     display_name="Resource profile",
                 ),
                 io.Int.Input(
@@ -620,7 +620,7 @@ class H3AddFixedNarration(io.ComfyNode):
                     "timed_script",
                     display_name="Timed dialogue",
                     multiline=True,
-                    default="0.55|大家好，我是土豆。\n5.73|下一站，出发！",
+                    default="0.55|大家好，我是旅行猫。\n5.73|下一站，出发！",
                 ),
                 io.Combo.Input(
                     "voice",
@@ -631,7 +631,7 @@ class H3AddFixedNarration(io.ComfyNode):
                         "zh-CN-XiaoyiNeural",
                         "macOS:Tingting",
                     ],
-                    default="zh-CN-YunxiNeural",
+                    default="macOS:Tingting",
                     display_name="Voice",
                 ),
                 io.Int.Input(

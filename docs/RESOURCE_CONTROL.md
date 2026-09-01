@@ -31,7 +31,9 @@ Darwin `taskpolicy` is also best-effort. A failed background/foreground policy c
 
 macOS does not provide a public, universal API for the actual frame-drop rate of every foreground application. The native display signal and CPU/WindowServer/GPU metrics are therefore responsiveness evidence and proxies, not proof that a particular app dropped a frame. The protection is best-effort rather than hard real-time. In particular, `SIGSTOP` cannot retract a Metal command buffer already committed to the GPU, so some GPU work may finish after the pause decision, and stopping the process does not release its loaded weights from unified memory. If the helper is missing or exits, auto fails over to the metric path rather than requiring extra permissions.
 
-The engine is wrapped with `caffeinate -s`: it prevents system idle sleep only while running on AC power. On battery, normal macOS idle-sleep policy remains effective. If ComfyUI crashes, the next `Start.command` cleans an H3 child only when both engine and controller birth fingerprints prove that the exact controller has exited; legacy or ambiguous records are left untouched. This startup recovery reduces orphan risk but is not an on-disk denoising checkpoint.
+The engine is wrapped with `caffeinate -s`: it prevents system idle sleep only while running on AC power. On battery, normal macOS idle-sleep policy remains effective. vpipe is owned by a launchd-kept worker rather than by ComfyUI, so a UI restart does not kill it. A restarted worker reattaches only to a process group with the exact recorded birth fingerprint. Stale jobs are never terminated automatically at ComfyUI startup; use the explicit verified-orphan action in `H3 Control.command` when cleanup is wanted. This is process supervision, not an on-disk denoising checkpoint.
+
+The vpipe queue also has a pre-launch memory gate. By default it waits 90 seconds after the previous engine exits, then samples `memory_pressure`, `vm.swapusage`, and `vm_stat` every five seconds. Estimated reclaimable headroom must be at least 6144 MiB, advisory free memory at least 20%, system wired memory at most 18% of physical RAM, and swap/pageout growth below the adaptive scheduler thresholds for three consecutive samples. An explicit vpipe Metal-memory refusal triggers one more cooldown and one identical retry. All thresholds can be overridden with the `vpipe_worker_*` settings in `config.json`.
 
 ## Control a running job
 
@@ -46,7 +48,7 @@ Double-click `H3 Control.command`, or run:
 ./H3\ Control.command max
 ```
 
-Each job stores live state in `process.json`, user intent in `control.json`, and denoising progress in `progress.json`.
+Each registered h3.c or vpipe job stores live state in `process.json` and user intent in `control.json`; engine/UI progress is stored in `progress.json` or `vpipe-status.json`.
 
 Changing policy during a run changes pause state and Darwin scheduling only. SSD streaming is fixed when the engine process starts and cannot be toggled halfway through denoising; start a new shot run with another resource profile to change the memory strategy.
 
@@ -99,7 +101,14 @@ The defaults can be changed in `config.json`:
   "auto_memory_recover_percent": 15,
   "auto_swap_growth_pause_mib_per_minute": 512,
   "auto_pageout_pause_mib_per_minute": 256,
-  "auto_require_ac_power": true
+  "auto_require_ac_power": true,
+  "vpipe_worker_cooldown_seconds": 90,
+  "vpipe_worker_memory_poll_seconds": 5,
+  "vpipe_worker_memory_stable_samples": 3,
+  "vpipe_worker_min_memory_free_percent": 20,
+  "vpipe_worker_min_reclaimable_mb": 6144,
+  "vpipe_worker_max_wired_percent": 18,
+  "vpipe_worker_memory_retry_limit": 1
 }
 ```
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-CURRENT_SCHEMA = 2
+CURRENT_SCHEMA = 4
 OLD_SHIPPED_DEFAULTS: dict[str, Any] = {
     "h3_binary": "runtime/h3.c/h3",
     "model_root": "runtime/models/MiniMax-H3",
@@ -54,17 +54,30 @@ def migrate(config_path: Path, example_path: Path) -> str:
     if schema >= CURRENT_SCHEMA:
         return "unchanged"
 
-    backup = config_path.with_name(f"{config_path.name}.v1-backup")
+    backup = config_path.with_name(f"{config_path.name}.v{schema}-backup")
     if not backup.exists():
         shutil.copy2(config_path, backup)
 
     was_old_shipped_default = current == OLD_SHIPPED_DEFAULTS
+    previous_schema = schema
     for key, value in defaults.items():
         current.setdefault(key, value)
     current["config_schema_version"] = CURRENT_SCHEMA
-    if was_old_shipped_default:
+    if previous_schema < 2 and was_old_shipped_default:
         current["auto_active_behavior"] = "adaptive"
         current["auto_poll_seconds"] = defaults["auto_poll_seconds"]
+    if previous_schema < 4:
+        legacy_work = Path("~/workspace/github/vpipe-work").expanduser()
+        # `vpipe` was the old shipped binary default, not an intentional
+        # custom path.  Always move that field to the verified project-local
+        # binary even when a valuable legacy Q8 work directory still exists.
+        if current.get("vpipe_binary") == "vpipe":
+            current["vpipe_binary"] = defaults["vpipe_binary"]
+        if (
+            current.get("vpipe_work_dir") == "~/workspace/github/vpipe-work"
+            and not legacy_work.exists()
+        ):
+            current["vpipe_work_dir"] = defaults["vpipe_work_dir"]
     atomic_write(config_path, current)
     return "migrated-default" if was_old_shipped_default else "migrated-custom"
 
