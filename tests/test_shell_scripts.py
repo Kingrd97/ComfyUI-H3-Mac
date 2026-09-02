@@ -84,6 +84,22 @@ def test_start_and_install_enable_launchd_supervision():
     assert (ROOT / "Service Control.command").is_file()
 
 
+def test_bilingual_readmes_include_a_complete_original_bf16_handoff():
+    for name in ("README.md", "README.zh-CN.md"):
+        readme = (ROOT / name).read_text(encoding="utf-8")
+        assert "./Download\\ Model.command Ref2VA" in readme
+        assert "220 GiB" in readme
+        assert "H3_Beginner_2_Shot_Storyboard" in readme
+        assert "Doctor.command" in readme
+        assert "Prepare vpipe Q8.command" in readme
+        assert "auto_ssd_streaming_ram_gib" in readme
+        assert "H3GenerateVideo" in readme
+
+    quickstart = (ROOT / "docs/QUICKSTART_zh.md").read_text(encoding="utf-8")
+    assert "Doctor.command` 只检查环境" not in quickstart
+    assert "./Download\\ Model.command Ref2VA" in quickstart
+
+
 def test_guardian_rebinds_display_link_after_screen_reconfiguration():
     source = (ROOT / "native" / "H3Guardian.swift").read_text(encoding="utf-8")
 

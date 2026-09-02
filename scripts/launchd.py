@@ -21,6 +21,7 @@ DOMAIN = f"gui/{UID}"
 AGENTS = Path.home() / "Library" / "LaunchAgents"
 COMFY_LABEL = "com.kingrd97.comfyui-h3-mac"
 WORKER_LABEL = "com.kingrd97.comfyui-h3-mac.vpipe-worker"
+REQUIRED_COMFY_NODES = ("H3GenerateVideo", "H3GenerateVideoVPipe")
 
 
 def _service_specs(project_root: Path) -> dict[str, dict[str, object]]:
@@ -89,18 +90,19 @@ def _loaded(label: str) -> bool:
 
 
 def _comfy_ready() -> tuple[bool, str]:
-    try:
-        with urllib.request.urlopen(
-            "http://127.0.0.1:8188/object_info/H3GenerateVideoVPipe", timeout=1.5
-        ) as response:
-            if response.status != 200:
-                return False, f"HTTP {response.status}"
-            payload = json.load(response)
-            if not isinstance(payload, dict) or "H3GenerateVideoVPipe" not in payload:
-                return False, "ComfyUI is reachable but the H3 vpipe node is missing"
-            return True, "H3 vpipe node ready"
-    except (OSError, ValueError, TypeError, urllib.error.URLError) as exc:
-        return False, str(exc)
+    for node_id in REQUIRED_COMFY_NODES:
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:8188/object_info/{node_id}", timeout=1.5
+            ) as response:
+                if response.status != 200:
+                    return False, f"{node_id}: HTTP {response.status}"
+                payload = json.load(response)
+                if not isinstance(payload, dict) or node_id not in payload:
+                    return False, f"ComfyUI is reachable but the {node_id} node is missing"
+        except (OSError, ValueError, TypeError, urllib.error.URLError) as exc:
+            return False, f"{node_id}: {exc}"
+    return True, "H3 BF16 and vpipe nodes ready"
 
 
 def _worker_ready(project_root: Path = PROJECT_ROOT) -> tuple[bool, str]:

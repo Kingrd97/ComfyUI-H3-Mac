@@ -40,6 +40,8 @@ def test_beginner_storyboard_template_is_valid_and_contains_the_guided_flow():
     assert node_types.count("H3BuildShotPrompt") == 2
     assert node_types.count("H3GenerateVideo") == 2
     assert node_types.count("H3AssembleStoryboard") == 1
+    generators = [node for node in workflow["nodes"] if node["type"] == "H3GenerateVideo"]
+    assert all(node["widgets_values"][6] == "auto" for node in generators)
     assert workflow["version"] == 0.4
 
 
