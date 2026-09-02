@@ -21,26 +21,52 @@ class FakeHTTPResponse(io.BytesIO):
         self.close()
 
 
-def test_comfy_readiness_requires_our_vpipe_node(monkeypatch):
-    missing = FakeHTTPResponse(json.dumps({"SomeOtherNode": {}}).encode())
-    monkeypatch.setattr(launchd.urllib.request, "urlopen", lambda *_a, **_k: missing)
+def test_comfy_readiness_requires_our_bf16_node(monkeypatch):
+    monkeypatch.setattr(
+        launchd.urllib.request,
+        "urlopen",
+        lambda *_a, **_k: FakeHTTPResponse(
+            json.dumps({"SomeOtherNode": {}}).encode()
+        ),
+    )
 
     ready, detail = launchd._comfy_ready()
 
     assert ready is False
-    assert "H3 vpipe node is missing" in detail
+    assert "H3GenerateVideo node is missing" in detail
+
+
+def test_comfy_readiness_requires_our_vpipe_node(monkeypatch):
+    def response(url, **_kwargs):
+        node_id = str(url).rsplit("/", 1)[-1]
+        payload = (
+            {node_id: {"display_name": "H3"}}
+            if node_id == "H3GenerateVideo"
+            else {"SomeOtherNode": {}}
+        )
+        return FakeHTTPResponse(json.dumps(payload).encode())
+
+    monkeypatch.setattr(launchd.urllib.request, "urlopen", response)
+
+    ready, detail = launchd._comfy_ready()
+
+    assert ready is False
+    assert "H3GenerateVideoVPipe node is missing" in detail
 
 
 def test_comfy_readiness_accepts_our_vpipe_node(monkeypatch):
-    response = FakeHTTPResponse(
-        json.dumps({"H3GenerateVideoVPipe": {"display_name": "H3"}}).encode()
-    )
-    monkeypatch.setattr(launchd.urllib.request, "urlopen", lambda *_a, **_k: response)
+    def response(url, **_kwargs):
+        node_id = str(url).rsplit("/", 1)[-1]
+        return FakeHTTPResponse(
+            json.dumps({node_id: {"display_name": "H3"}}).encode()
+        )
+
+    monkeypatch.setattr(launchd.urllib.request, "urlopen", response)
 
     ready, detail = launchd._comfy_ready()
 
     assert ready is True
-    assert detail == "H3 vpipe node ready"
+    assert detail == "H3 BF16 and vpipe nodes ready"
 
 
 def test_launchd_keeps_control_plane_and_worker_alive(tmp_path: Path):

@@ -5,17 +5,19 @@
 依次双击：
 
 1. `Install.command`
-2. `Download Model.command`，macOS 26 新手选 `1) vpipe Q8 FL2VA`
+2. `Download Model.command`：速度/空间优先选 `1) vpipe Q8 FL2VA`；48GB M5 Pro 需要官方原始权重和多参考时选 `2) h3.c Ref2VA BF16`
 3. `Doctor.command`
 4. `Start.command`
 
-`Doctor.command` 只检查环境，不会加载大模型。
+`Doctor.command` 不会运行生成，也不会把整套 BF16 权重加载到统一内存。如果已安装 Q8，它会顺序读取约 67.5 GiB 做完整 SHA-256 校验；BF16 路线会校验锁定清单、文件尺寸/内容寻址链接，再调用 h3.c `--info`。
 
 从旧版升级时，配置 schema v4 会先保存备份；自己改过的行为、阈值与有效外部工作目录保持不变，旧的未锁定 vpipe 命令会迁到项目内已验证的二进制。
 
-vpipe Q8 最终约 67.5 GiB（模型加两套 LoRA），首次紧凑准备建议留出至少 120 GiB。下载和量化可 Ctrl-C；重跑会续传并复用已经校验完成的阶段。48GB M5 Pro 推荐 `auto`。
+vpipe Q8 最终约 67.5 GiB（模型加两套 LoRA），首次紧凑准备建议留出至少 120 GiB。h3.c Ref2VA BF16 会同时包含 FL2VA 基础，实际约 196 GiB，建议下载前至少有 220 GiB 可用。两条路线都可 Ctrl-C 中断并通过重跑相同命令复用缓存；48GB M5 Pro 推荐 `auto`。
 
 启动后可在 `Comfy > Locale > Language` 选择“中文”。完成推荐的 vpipe Q8 模型准备后，第一次使用建议从 `工作流 > 浏览模板 > ComfyUI-H3-Mac > H3_vpipe_Q8_2_Shot_Fixed_Voice` 开始，不需要自己从空白画布搭节点。`H3_Beginner_2_Shot_Storyboard` 属于需要额外 BF16/Ref2VA 权重的高级模板。
+
+如果只安装原始 BF16，命令行可直接使用 `./Download\ Model.command Ref2VA`（用户本人阅读许可证并输入 `AGREE`），不需要准备 Q8。载入 `H3_Beginner_2_Shot_Storyboard`，保持 `Ref2VA / preview / auto`。BF16-only 时 vpipe worker 显示等待 Q8 资产属于预期状态，不影响 `H3 · 生成视频（Metal）`。
 
 ## 2. 先用推荐的 vpipe Q8 模板
 
