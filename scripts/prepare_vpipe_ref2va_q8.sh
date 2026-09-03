@@ -228,11 +228,20 @@ download_checked() {
   if [[ -n "${HF_TOKEN:-}" ]]; then
     aria_args+=(--header="Authorization: Bearer ${HF_TOKEN}")
   fi
-  aria2c "${aria_args[@]}" "$dit_url"
+  download_attempt=0
+  until aria2c "${aria_args[@]}" "$dit_url"; do
+    download_attempt=$(( download_attempt + 1 ))
+    printf '下载连接失效或网络中断（第 %s 次）；5 秒后从 Hugging Face 获取新签名并续传。\n' \
+      "$download_attempt" >&2
+    /bin/sleep 5
+  done
 }
 
 if ! verify_component "$dit_quant_root/diffusion_models" dit; then
-  [[ -f "$dit_path" ]] || download_checked
+  # Always enter aria2, even when the sparse partial file already exists. The
+  # signed Xet redirect expires during slow multi-hour downloads; a new aria2
+  # invocation refreshes that redirect and resumes from the existing .aria2 map.
+  download_checked
   actual_sha="$(/usr/bin/shasum -a 256 "$dit_path" | awk '{print $1}')"
   [[ "$actual_sha" == "$dit_sha" ]] || {
     printf 'Ref2VA BF16 DiT SHA-256 不匹配；保留文件，不开始量化。\n' >&2

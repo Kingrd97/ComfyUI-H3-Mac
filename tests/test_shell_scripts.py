@@ -200,6 +200,9 @@ def test_ref2va_q8_preparation_reuses_fl2va_shared_assets():
     assert "overwrite_existing=true" in prepare
     assert "VPIPE_DOWNLOAD_CONNECTIONS" in prepare
     assert "--continue=true" in prepare
+    assert 'until aria2c "${aria_args[@]}" "$dit_url"' in prepare
+    assert "获取新签名并续传" in prepare
+    assert '[[ -f "$dit_path" ]] || download_checked' not in prepare
     assert "taskpolicy" in prepare
     assert prepare.index("H3_MODEL_LICENSE_ACCEPTED") < prepare.index(
         '/bin/mkdir -p "$work_dir/models/local"'
