@@ -180,6 +180,32 @@ def test_vpipe_installer_and_q8_preparation_are_reproducible_and_resumable():
         assert os.access(path, os.X_OK)
 
 
+def test_ref2va_q8_preparation_reuses_fl2va_shared_assets():
+    wrapper = (ROOT / "Prepare vpipe Ref2VA Q8.command").read_text(
+        encoding="utf-8"
+    )
+    prepare = (ROOT / "scripts/prepare_vpipe_ref2va_q8.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "MiniMax H3 Community License" in wrapper
+    assert "输入 AGREE" in wrapper
+    assert "minimax_h3_ref2va_bf16.safetensors" in prepare
+    assert "e32c54c1a7b4f5f397f195cea267ccb18806303bb665678c4bee60953bdf3026" in prepare
+    assert 'base_root="$work_dir/models/local/MiniMax-H3-FL2VA-8bit"' in prepare
+    assert '/bin/cp -al "$base_root/." "$final_root/"' in prepare
+    assert "target=dit" in prepare
+    assert "quant_modulation=true" in prepare
+    assert "model_type=minimax-h3-ref2va" in prepare
+    assert "overwrite_existing=true" in prepare
+    assert "VPIPE_DOWNLOAD_CONNECTIONS" in prepare
+    assert "--continue=true" in prepare
+    assert "taskpolicy" in prepare
+    assert prepare.index("H3_MODEL_LICENSE_ACCEPTED") < prepare.index(
+        '/bin/mkdir -p "$work_dir/models/local"'
+    )
+
+
 def test_h3_control_uses_only_the_locked_shared_signal_helper():
     """Direct controls are serialized; raw killpg calls remain forbidden."""
 
