@@ -11,9 +11,11 @@ import shutil
 import subprocess
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
+
+from .models import H3Reference
 
 
 ProgressCallback = Callable[[int, int, str], None]
@@ -23,7 +25,7 @@ CancelCallback = Callable[[], bool]
 # Bump this whenever the generated .vpipeline graph changes in a way that can
 # change the resulting media.  Keeping it independent of the executable path
 # prevents an in-place vpipe upgrade from silently reusing an older result.
-_PIPELINE_GENERATION = 2
+_PIPELINE_GENERATION = 5
 
 
 def _valid_video_file(path: Path) -> bool:
@@ -32,6 +34,20 @@ def _valid_video_file(path: Path) -> bool:
     if not path.is_file() or path.stat().st_size == 0:
         return False
     ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        # launchd starts agents with /usr/bin:/bin:/usr/sbin:/sbin by default,
+        # so Homebrew's ffprobe is otherwise invisible even when installed.
+        ffprobe = next(
+            (
+                str(candidate)
+                for candidate in (
+                    Path("/opt/homebrew/bin/ffprobe"),
+                    Path("/usr/local/bin/ffprobe"),
+                )
+                if candidate.is_file()
+            ),
+            None,
+        )
     if ffprobe is None:
         return False
     try:
@@ -74,12 +90,28 @@ def _valid_video_file(path: Path) -> bool:
     )
 
 
+def _wait_for_valid_video(
+    path: Path, *, timeout_seconds: float = 15.0, poll_seconds: float = 0.25
+) -> bool:
+    """Tolerate the short visibility delay after a worker finalizes an MP4."""
+
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    while True:
+        if _valid_video_file(path):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(max(0.0, poll_seconds))
+
+
 @dataclass(frozen=True)
 class VPipeConfig:
     binary: Path
     work_dir: Path
     project_root: Path | None = None
     model: str = "local/MiniMax-H3-FL2VA-8bit"
+    ref_model: str = "local/MiniMax-H3-Ref2VA-8bit"
+    ref_lora: str = "lightx2v/Minimax-h3-Turbo-ref2va-4step-split"
     lora: str = "larryvrh/MiniMax-H3-Turbo-Lora-v4-600-ema"
     lora_768p: str = "lightx2v/Minimax-h3-Turbo-4step-768p"
     output_subdir: str = "h3-jobs"
@@ -102,7 +134,9 @@ class VPipeConfig:
 @dataclass(frozen=True)
 class VPipeRequest:
     prompt: str
-    first_frame: Path
+    first_frame: Path | None = None
+    references: tuple[H3Reference, ...] = field(default_factory=tuple)
+    task: str = "FL2VA"
     width: int = 960
     height: int = 544
     frames: int = 124
@@ -233,6 +267,15 @@ def load_vpipe_config(project_root: Path) -> VPipeConfig:
         work_dir=work_dir,
         project_root=project_root.resolve(),
         model=str(raw.get("vpipe_model", "local/MiniMax-H3-FL2VA-8bit")),
+        ref_model=str(
+            raw.get("vpipe_ref_model", "local/MiniMax-H3-Ref2VA-8bit")
+        ),
+        ref_lora=str(
+            raw.get(
+                "vpipe_ref_lora",
+                "lightx2v/Minimax-h3-Turbo-ref2va-4step-split",
+            )
+        ),
         lora=str(
             raw.get(
                 "vpipe_lora", "larryvrh/MiniMax-H3-Turbo-Lora-v4-600-ema"
@@ -347,6 +390,8 @@ def _atomic_json(path: Path, payload: dict[str, object]) -> None:
 
 
 def _pipeline(config: VPipeConfig, request: VPipeRequest, output: Path) -> dict:
+    if request.task == "Ref2VA":
+        return _reference_pipeline(config, request, output)
     use_768p = request.adapter_profile == "turbo_highres_4step"
     lora = config.lora_768p if use_768p else config.lora
     video_shift = 6.0 if use_768p else 12.0
@@ -432,7 +477,11 @@ def _pipeline(config: VPipeConfig, request: VPipeRequest, output: Path) -> dict:
                 "width": request.width,
                 "frames": request.frames,
                 "fps": request.fps,
-                "steps": request.steps,
+                # vpipe counts both scheduler endpoints in `steps`, while the
+                # public request and ComfyUI field represent actual denoiser
+                # evaluations (NFE).  N evaluations therefore need N + 1
+                # schedule points at the vpipe serialization boundary.
+                "steps": request.steps + 1,
                 "seed": request.seed,
                 "i8_gemm": True,
                 "unload_when_idle": "always",
@@ -487,6 +536,150 @@ def _pipeline(config: VPipeConfig, request: VPipeRequest, output: Path) -> dict:
     return {"id": "comfyui-h3-vpipe-shot", "stages": stages, "subpipelines": []}
 
 
+def _reference_pipeline(
+    config: VPipeConfig, request: VPipeRequest, output: Path
+) -> dict:
+    reference_paths: list[str] = []
+    for reference in request.references:
+        if reference.audio_path is not None:
+            raise ValueError(
+                "vpipe Q8 Ref2VA does not accept a separate video audio path; "
+                "mux it into the video or add it as an ordered audio reference."
+            )
+        reference_paths.append(str(reference.path))
+
+    model_config: dict[str, object] = {
+        "video_shift": 12.0,
+        "audio_shift": 3.0,
+        "condition_timestep": 1.0,
+        "condition_audio_timestep": 1.0,
+        "audio_seconds": 0.0,
+    }
+    if request.adapter_profile == "ref2va_turbo_4step":
+        model_config.update(
+            {
+                "lora": config.ref_lora,
+                "lora_scale": 1.0,
+            }
+        )
+
+    stages: list[dict] = [
+        {
+            "id": "model-select",
+            "type": "model-select",
+            "iports": [],
+            "config": {"hf_dir": config.ref_model},
+        },
+        {
+            "id": "text-prompt",
+            "type": "text-prompt",
+            "iports": [],
+            "config": {"text": request.prompt},
+        },
+        {
+            "id": "video-ref-encoder",
+            "type": "video-ref-encoder",
+            "iports": [
+                {"src": "text-prompt", "oport": 0},
+                {"src": "model-select", "oport": 0},
+            ],
+            "config": {
+                "references": reference_paths,
+                "frames": request.frames,
+                # The released 2048 default is unnecessarily expensive for
+                # an interactive 24/48 GB Mac workflow.  1024 matches vpipe's
+                # documented reference example and retains useful identity.
+                "reference_image_short_edge": 1024,
+                "unload_when_idle": "always",
+            },
+        },
+        {
+            "id": "minimax-h3-model-config",
+            "type": "minimax-h3-model-config",
+            "iports": [],
+            "config": model_config,
+        },
+        {
+            "id": "generate-video",
+            "type": "generate-video",
+            "iports": [
+                {"src": "video-ref-encoder", "oport": 0},
+                {"src": "", "oport": 0},
+                {"src": "model-select", "oport": 0},
+                {"src": "", "oport": 0},
+                {"src": "", "oport": 0},
+                {"src": "", "oport": 0},
+                {"src": "", "oport": 0},
+                {"src": "video-ref-encoder", "oport": 1},
+                {"src": "video-ref-encoder", "oport": 2},
+                {"src": "minimax-h3-model-config", "oport": 0},
+            ],
+            "config": {
+                "height": request.height,
+                "width": request.width,
+                "frames": request.frames,
+                "fps": request.fps,
+                # Keep VPipeRequest.steps user-facing as true NFE.  vpipe's
+                # graph format counts one extra scheduler endpoint.
+                "steps": request.steps + 1,
+                "seed": request.seed,
+                "i8_gemm": True,
+                "unload_when_idle": "always",
+            },
+        },
+        {
+            "id": "vae-decode",
+            "type": "vae-decode",
+            "iports": [
+                {"src": "generate-video", "oport": 0},
+                {"src": "model-select", "oport": 0},
+            ],
+            "config": {},
+        },
+    ]
+    if request.enable_h3_audio:
+        stages.append(
+            {
+                "id": "audio-vae-decode",
+                "type": "audio-vae-decode",
+                "iports": [
+                    {"src": "generate-video", "oport": 1},
+                    {"src": "model-select", "oport": 0},
+                ],
+                "config": {},
+            }
+        )
+    save_iports = [{"src": "rgb-to-video", "oport": 0}]
+    if request.enable_h3_audio:
+        save_iports.append({"src": "audio-vae-decode", "oport": 0})
+    stages.extend(
+        [
+            {
+                "id": "rgb-to-video",
+                "type": "rgb-to-video",
+                "iports": [{"src": "vae-decode", "oport": 0}],
+                "config": {"fps": request.fps},
+            },
+            {
+                "id": "save-video",
+                "type": "save-video",
+                "iports": save_iports,
+                "config": {
+                    "output_url": str(output),
+                    "enable_video": True,
+                    "enable_audio": request.enable_h3_audio,
+                    "video_bitrate": config.video_bitrate,
+                },
+            },
+        ]
+    )
+    return {
+        "id": "comfyui-h3-vpipe-reference-shot",
+        "stages": stages,
+        "subpipelines": [],
+    }
+
+
 def _progress_from_line(line: str) -> tuple[int, str] | None:
     """Translate stable vpipe stage messages into conservative UI progress."""
 
@@ -500,6 +693,7 @@ def _progress_from_line(line: str) -> tuple[int, str] | None:
 
     markers = (
         ("ImageResampleStage('first-frame')", 5, "Preparing reference frame"),
+        ("VideoRefEncoderStage('video-ref-encoder')", 10, "Encoding references"),
         ("VaeEncodeStage('vae-encode-first')", 10, "Encoding reference frame"),
         ("DiffusionConditionerStage('diffusion-conditioner')", 15, "Encoding prompt"),
         ("MiniMax-H3 (video", 20, "Preparing H3 denoiser"),
@@ -523,8 +717,48 @@ class VPipeRunner:
     def validate(self, request: VPipeRequest) -> None:
         if not request.prompt.strip():
             raise ValueError("Prompt must not be empty.")
-        if not request.first_frame.is_file():
-            raise FileNotFoundError(f"First-frame image not found: {request.first_frame}")
+        if request.task not in {"FL2VA", "Ref2VA"}:
+            raise ValueError("vpipe H3 task must be FL2VA or Ref2VA.")
+        if request.task == "FL2VA":
+            if request.first_frame is None or not request.first_frame.is_file():
+                raise FileNotFoundError(
+                    f"First-frame image not found: {request.first_frame}"
+                )
+            if request.references:
+                raise ValueError("FL2VA cannot use ordered Ref2VA references.")
+            if request.adapter_profile in {"ref2va_8step", "ref2va_turbo_4step"}:
+                raise ValueError("FL2VA cannot use a Ref2VA adapter profile.")
+        else:
+            if request.first_frame is not None:
+                raise ValueError("Ref2VA cannot be combined with a first-frame anchor.")
+            if not request.references:
+                raise ValueError("Ref2VA needs at least one ordered media reference.")
+            if len(request.references) > 12:
+                raise ValueError("Ref2VA accepts at most 12 ordered references.")
+            kinds = [reference.kind for reference in request.references]
+            if all(kind == "audio" for kind in kinds):
+                raise ValueError("Ref2VA audio cannot be the only reference kind.")
+            if sum(kind == "image" for kind in kinds) > 9:
+                raise ValueError("Ref2VA accepts at most 9 image references.")
+            if sum(kind in {"video", "silent_video", "video_audio"} for kind in kinds) > 3:
+                raise ValueError("Ref2VA accepts at most 3 video references.")
+            if sum(kind == "audio" for kind in kinds) > 3:
+                raise ValueError("Ref2VA accepts at most 3 standalone audio references.")
+            for reference in request.references:
+                if not reference.path.is_file():
+                    raise FileNotFoundError(
+                        f"Ref2VA reference not found: {reference.path}"
+                    )
+                if reference.audio_path is not None:
+                    raise ValueError(
+                        "vpipe Q8 Ref2VA requires muxed video audio or a separate "
+                        "ordered audio reference."
+                    )
+            if request.adapter_profile not in {"ref2va_8step", "ref2va_turbo_4step"}:
+                raise ValueError(
+                    "Ref2VA requires the ref2va_8step or ref2va_turbo_4step "
+                    "adapter profile."
+                )
         validate_vpipe_installation(self.config)
         if request.width % 32 or request.height % 32:
             raise ValueError("vpipe H3 width and height must be multiples of 32.")
@@ -540,21 +774,45 @@ class VPipeRunner:
             raise ValueError("Steps must be between 2 and 60.")
         if request.resource_profile not in {"low", "auto", "max"}:
             raise ValueError("Resource profile must be low, auto, or max.")
-        if request.adapter_profile not in {"turbo_544p", "turbo_highres_4step"}:
-            raise ValueError("Adapter profile must be turbo_544p or turbo_highres_4step.")
+        if request.adapter_profile not in {
+            "turbo_544p",
+            "turbo_highres_4step",
+            "ref2va_8step",
+            "ref2va_turbo_4step",
+        }:
+            raise ValueError(
+                "Adapter profile must be turbo_544p, turbo_highres_4step, "
+                "ref2va_8step, or ref2va_turbo_4step."
+            )
         if request.adapter_profile == "turbo_highres_4step":
             if request.width * request.height < 1152 * 640:
                 raise ValueError("The high-resolution Turbo adapter starts at 1152x640.")
             if request.steps != 4:
                 raise ValueError("The high-resolution Turbo adapter requires exactly 4 steps.")
+        if request.adapter_profile == "ref2va_turbo_4step" and request.steps != 4:
+            raise ValueError("The Ref2VA Turbo adapter requires exactly 4 steps.")
 
     def _job_id(self, request: VPipeRequest) -> str:
-        image_stat = request.first_frame.stat()
         payload = asdict(request)
-        payload["first_frame"] = str(request.first_frame.resolve())
-        payload["first_frame_size"] = image_stat.st_size
-        payload["first_frame_mtime_ns"] = image_stat.st_mtime_ns
+        if request.first_frame is not None:
+            image_stat = request.first_frame.stat()
+            payload["first_frame"] = str(request.first_frame.resolve())
+            payload["first_frame_size"] = image_stat.st_size
+            payload["first_frame_mtime_ns"] = image_stat.st_mtime_ns
+        payload["references"] = []
+        for reference in request.references:
+            reference_stat = reference.path.stat()
+            payload["references"].append(
+                {
+                    "kind": reference.kind,
+                    "path": str(reference.path.resolve()),
+                    "size": reference_stat.st_size,
+                    "mtime_ns": reference_stat.st_mtime_ns,
+                }
+            )
         payload["model"] = self.config.model
+        payload["ref_model"] = self.config.ref_model
+        payload["ref_lora"] = self.config.ref_lora
         payload["lora"] = self.config.lora
         payload["lora_768p"] = self.config.lora_768p
         payload["video_bitrate"] = self.config.video_bitrate
@@ -583,9 +841,13 @@ class VPipeRunner:
         partial = job_dir / "result.partial.mp4"
         pipeline_path = job_dir / "pipeline.vpipeline"
         request_path = job_dir / "request.json"
-        if self.config.worker_enabled and _read_json(job_dir / "vpipe-status.json").get(
-            "state"
-        ) in {"queued", "launching", "running", "paused"}:
+        existing_status = _read_json(job_dir / "vpipe-status.json")
+        if self.config.worker_enabled and existing_status.get("state") in {
+            "queued",
+            "launching",
+            "running",
+            "paused",
+        }:
             return self._run_via_worker(
                 request,
                 job_id=job_id,
@@ -594,8 +856,11 @@ class VPipeRunner:
                 pipeline_path=pipeline_path,
                 progress=progress,
                 cancelled=cancelled,
-                submit=False,
-                force_rerun=False,
+                # Re-enter the submit lock while attaching.  Normally this is
+                # a no-op, but it also repairs the narrow crash window where a
+                # queued status was published just before its durable ticket.
+                submit=True,
+                force_rerun=bool(existing_status.get("force_rerun", False)),
             )
 
         partial.unlink(missing_ok=True)
@@ -666,6 +931,7 @@ class VPipeRunner:
         pause_path = job_dir / "pause.request"
         queue_root = worker_root / "queue"
         queue_root.mkdir(parents=True, exist_ok=True)
+        ticket_path = queue_root / f"{job_id}.json"
         submit_lock_path = job_dir / "submit.lock"
         started = time.monotonic()
         if submit:
@@ -673,12 +939,17 @@ class VPipeRunner:
             with submit_lock_path.open("a+", encoding="utf-8") as submit_lock:
                 fcntl.flock(submit_lock.fileno(), fcntl.LOCK_EX)
                 current = _read_json(status_path)
-                if current.get("state") not in {
+                current_state = current.get("state")
+                new_submission = current_state not in {
                     "queued",
                     "launching",
                     "running",
                     "paused",
-                }:
+                }
+                repair_missing_ticket = (
+                    current_state in {"queued", "paused"} and not ticket_path.is_file()
+                )
+                if new_submission:
                     pause_path.unlink(missing_ok=True)
                     control_lock_path = job_dir / "control.lock"
                     with control_lock_path.open("a+", encoding="utf-8") as control_lock:
@@ -707,9 +978,10 @@ class VPipeRunner:
                             "updated_at": time.time(),
                         },
                     )
+                if new_submission or repair_missing_ticket:
                     pipeline_digest = hashlib.sha256(pipeline_path.read_bytes()).hexdigest()
                     _atomic_json(
-                        queue_root / f"{job_id}.json",
+                        ticket_path,
                         {
                             "schema_version": 1,
                             "job_id": job_id,
@@ -720,6 +992,16 @@ class VPipeRunner:
                             "created_at": time.time(),
                         },
                     )
+                    if repair_missing_ticket:
+                        _atomic_json(
+                            status_path,
+                            {
+                                **current,
+                                "state": current_state,
+                                "message": "Recovered missing durable worker ticket",
+                                "updated_at": time.time(),
+                            },
+                        )
         if progress:
             progress(1, 100, "Queued for launchd vpipe worker")
 
@@ -739,7 +1021,12 @@ class VPipeRunner:
                 last_message = message
                 progress(min(100, current_progress), 100, message)
             if state == "completed":
-                if not _valid_video_file(output_path):
+                # The worker publishes its terminal status immediately after an
+                # atomic rename.  On macOS, ffprobe can briefly observe the old
+                # directory state even though the completed MP4 is already being
+                # flushed.  Give the file a short settling window before calling
+                # a successful render corrupt.
+                if not _wait_for_valid_video(output_path):
                     raise RuntimeError(
                         f"vpipe worker marked a non-playable result complete: {output_path}"
                     )

@@ -93,10 +93,7 @@ def test_cache_digest_includes_resolved_quality_and_streaming(tmp_path: Path):
     assert changed_quality_digest != resident_digest
 
 
-@patch(
-    "h3_bridge.runner.os.uname",
-    return_value=SimpleNamespace(sysname="Darwin", machine="arm64"),
-)
+@patch("h3_bridge.runner._is_apple_silicon", return_value=True)
 def test_runner_persists_job_and_reuses_completed_result(_uname, tmp_path: Path):
     runner = make_runner(tmp_path)
     request = H3Request(prompt="a cat playing in water", resource_profile="max")
@@ -142,10 +139,7 @@ def test_runner_persists_job_and_reuses_completed_result(_uname, tmp_path: Path)
     assert second.elapsed_seconds == 0.0
 
 
-@patch(
-    "h3_bridge.runner.os.uname",
-    return_value=SimpleNamespace(sysname="Darwin", machine="arm64"),
-)
+@patch("h3_bridge.runner._is_apple_silicon", return_value=True)
 def test_scheduler_cannot_stop_launcher_before_registry_activation(
     _uname, tmp_path: Path
 ):
@@ -177,10 +171,7 @@ def test_scheduler_cannot_stop_launcher_before_registry_activation(
     assert observed
 
 
-@patch(
-    "h3_bridge.runner.os.uname",
-    return_value=SimpleNamespace(sysname="Darwin", machine="arm64"),
-)
+@patch("h3_bridge.runner._is_apple_silicon", return_value=True)
 def test_references_cannot_mix_with_frame_anchors(_uname, tmp_path: Path):
     runner = make_runner(tmp_path)
     image = tmp_path / "cat.png"
@@ -200,10 +191,7 @@ def test_references_cannot_mix_with_frame_anchors(_uname, tmp_path: Path):
             raise AssertionError("Expected mixed conditioning modes to be rejected")
 
 
-@patch(
-    "h3_bridge.runner.os.uname",
-    return_value=SimpleNamespace(sysname="Darwin", machine="arm64"),
-)
+@patch("h3_bridge.runner._is_apple_silicon", return_value=True)
 @patch("h3_bridge.runner._physical_memory_gib", return_value=48.0)
 def test_runner_enforces_h3_canvas_frame_and_low_memory_duration_limits(
     _memory, _uname, tmp_path: Path
@@ -224,10 +212,7 @@ def test_runner_enforces_h3_canvas_frame_and_low_memory_duration_limits(
                 runner.validate(request)
 
 
-@patch(
-    "h3_bridge.runner.os.uname",
-    return_value=SimpleNamespace(sysname="Darwin", machine="arm64"),
-)
+@patch("h3_bridge.runner._is_apple_silicon", return_value=True)
 @patch("h3_bridge.runner._physical_memory_gib", return_value=48.0)
 def test_large_job_override_keeps_h3_hard_limit(_memory, _uname, tmp_path: Path):
     runner = make_runner(tmp_path)
@@ -239,10 +224,7 @@ def test_large_job_override_keeps_h3_hard_limit(_memory, _uname, tmp_path: Path)
             runner.validate(H3Request(prompt="cat", seconds=15.5))
 
 
-@patch(
-    "h3_bridge.runner.os.uname",
-    return_value=SimpleNamespace(sysname="Darwin", machine="arm64"),
-)
+@patch("h3_bridge.runner._is_apple_silicon", return_value=True)
 def test_runner_requires_shader_and_managed_manifest_in_production(_uname, tmp_path: Path):
     runner = make_runner(tmp_path)
     (runner.config.h3_binary.parent / "h3_shaders.metal").unlink()
@@ -257,27 +239,33 @@ def test_runner_requires_shader_and_managed_manifest_in_production(_uname, tmp_p
             managed_runner.validate(H3Request(prompt="cat"))
 
 
-@patch(
-    "h3_bridge.runner.os.uname",
-    return_value=SimpleNamespace(sysname="Darwin", machine="arm64"),
-)
+@patch("h3_bridge.runner._is_apple_silicon", return_value=True)
 def test_carriage_return_progress_does_not_block_cancel(_uname, tmp_path: Path):
     runner = make_runner(tmp_path)
+    output_root = tmp_path / "custom-output"
     request = H3Request(
         prompt="cr-progress-wait",
         resource_profile="max",
         quality_profile="preview",
     )
     started = time.monotonic()
+
+    def cancel_after_progress() -> bool:
+        logs = list((output_root / "h3-jobs").glob("*/engine.log"))
+        if logs and "sample 1/4" in logs[0].read_text(encoding="utf-8"):
+            return True
+        # Keep a bounded failure path if carriage-return framing regresses.
+        return time.monotonic() - started > 5.0
+
     with patch("h3_bridge.runner.shutil.which", return_value="/usr/bin/true"):
         with pytest.raises(InterruptedError, match="cancelled"):
             runner.run(
                 request,
-                tmp_path / "custom-output",
-                cancelled=lambda: time.monotonic() - started > 0.6,
+                output_root,
+                cancelled=cancel_after_progress,
             )
-    assert time.monotonic() - started < 3.0
-    jobs = list((tmp_path / "custom-output" / "h3-jobs").iterdir())
+    assert time.monotonic() - started < 6.0
+    jobs = list((output_root / "h3-jobs").iterdir())
     assert len(jobs) == 1
     assert "sample 1/4" in (jobs[0] / "engine.log").read_text(encoding="utf-8")
     progress = json.loads((jobs[0] / "progress.json").read_text(encoding="utf-8"))
@@ -295,10 +283,7 @@ def test_generation_lock_rejects_a_second_comfy_instance(tmp_path: Path):
                 raise AssertionError("unreachable")
 
 
-@patch(
-    "h3_bridge.runner.os.uname",
-    return_value=SimpleNamespace(sysname="Darwin", machine="arm64"),
-)
+@patch("h3_bridge.runner._is_apple_silicon", return_value=True)
 def test_second_lock_metadata_publication_blocks_observer_until_exact_token(
     _uname, tmp_path: Path
 ):
@@ -419,10 +404,7 @@ def test_termination_never_signals_an_ambiguous_process_group():
     process.wait.assert_not_called()
 
 
-@patch(
-    "h3_bridge.runner.os.uname",
-    return_value=SimpleNamespace(sysname="Darwin", machine="arm64"),
-)
+@patch("h3_bridge.runner._is_apple_silicon", return_value=True)
 def test_completed_job_keeps_registry_when_group_exit_is_ambiguous(
     _uname, tmp_path: Path
 ):
@@ -467,10 +449,7 @@ def test_termination_reports_leader_or_child_group_residue():
     assert signals == [signal.SIGCONT, signal.SIGTERM, signal.SIGKILL]
 
 
-@patch(
-    "h3_bridge.runner.os.uname",
-    return_value=SimpleNamespace(sysname="Darwin", machine="arm64"),
-)
+@patch("h3_bridge.runner._is_apple_silicon", return_value=True)
 def test_ref2va_requires_a_completed_manifest_task(_uname, tmp_path: Path):
     runner = make_runner(tmp_path)
     base_file = runner.config.model_root / "FL2VA" / "base.bin"

@@ -352,7 +352,14 @@ class H3GenerateVideoVPipe(io.ComfyNode):
                 io.Int.Input("width", default=960, min=256, max=1344, step=32, display_name="Width"),
                 io.Int.Input("height", default=544, min=256, max=1344, step=32, display_name="Height"),
                 io.Int.Input("frames", default=124, min=22, max=362, step=17, display_name="Frames"),
-                io.Int.Input("steps", default=6, min=2, max=60, step=1, display_name="Steps"),
+                io.Int.Input(
+                    "steps",
+                    default=6,
+                    min=2,
+                    max=60,
+                    step=1,
+                    display_name="Denoising evaluations (NFE)",
+                ),
                 io.Combo.Input(
                     "audio_mode",
                     options=["silent_for_fixed_tts", "h3_joint_audio"],
@@ -445,6 +452,147 @@ class H3GenerateVideoVPipe(io.ComfyNode):
         summary = (
             f"job={result.job_id} | elapsed={result.elapsed_seconds:.1f}s | "
             f"engine=vpipe-q8 | audio={audio_mode} | output={relative}"
+        )
+        return io.NodeOutput(
+            video,
+            str(result.job_dir),
+            summary,
+            ui=ui.PreviewVideo(
+                [ui.SavedResult(relative.name, str(relative.parent), io.FolderType.output)]
+            ),
+        )
+
+
+class H3GenerateVideoVPipeRef(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3GenerateVideoVPipeRef",
+            display_name="H3 · Generate from references with vpipe Q8 (Metal)",
+            category=CATEGORY,
+            description=(
+                "Generate a Ref2VA shot from ordered images, videos, and audio "
+                "through vpipe's Q8 Metal backend. Use one locked song mix for "
+                "every MV shot, then replace generated audio with that master."
+            ),
+            inputs=[
+                io.String.Input(
+                    "prompt",
+                    display_name="Prompt",
+                    multiline=True,
+                    dynamic_prompts=True,
+                    default=(
+                        "The same cats as the ordered references perform the song "
+                        "with stable identity, restrained singing mouth motion, and "
+                        "beat-accurate instrument movement."
+                    ),
+                ),
+                H3References.Input("references", display_name="Ordered references"),
+                io.Int.Input(
+                    "width", default=640, min=256, max=1344, step=32, display_name="Width"
+                ),
+                io.Int.Input(
+                    "height", default=1152, min=256, max=1344, step=32, display_name="Height"
+                ),
+                io.Int.Input(
+                    "frames", default=124, min=22, max=362, step=17, display_name="Frames"
+                ),
+                io.Int.Input(
+                    "steps",
+                    default=4,
+                    min=2,
+                    max=60,
+                    step=1,
+                    display_name="Denoising evaluations (NFE)",
+                ),
+                io.Combo.Input(
+                    "audio_mode",
+                    options=["h3_joint_audio", "silent_output"],
+                    default="h3_joint_audio",
+                    display_name="Output audio",
+                ),
+                io.Combo.Input(
+                    "resource_profile",
+                    options=["low", "auto", "max"],
+                    default="low",
+                    display_name="Resource profile",
+                ),
+                io.Int.Input(
+                    "seed",
+                    default=42,
+                    min=0,
+                    max=0x7FFFFFFF,
+                    control_after_generate=True,
+                    display_name="Seed",
+                ),
+                io.Boolean.Input(
+                    "reuse_completed",
+                    default=True,
+                    label_on="Reuse",
+                    label_off="Rerun",
+                    display_name="Reuse identical completed job",
+                    advanced=True,
+                ),
+            ],
+            hidden=[io.Hidden.unique_id],
+            outputs=[
+                io.Video.Output("video", display_name="Video"),
+                io.String.Output("job_dir", display_name="Job directory"),
+                io.String.Output("summary", display_name="Run summary"),
+            ],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        prompt,
+        references,
+        width,
+        height,
+        frames,
+        steps,
+        audio_mode,
+        resource_profile,
+        seed,
+        reuse_completed,
+    ):
+        output_root = Path(folder_paths.get_output_directory()).resolve()
+        request = VPipeRequest(
+            prompt=prompt,
+            references=tuple(references),
+            task="Ref2VA",
+            width=width,
+            height=height,
+            frames=frames,
+            fps=24,
+            steps=steps,
+            seed=seed,
+            resource_profile=resource_profile,
+            enable_h3_audio=audio_mode == "h3_joint_audio",
+            adapter_profile=(
+                "ref2va_turbo_4step" if steps == 4 else "ref2va_8step"
+            ),
+        )
+        progress_bar = comfy.utils.ProgressBar(100, node_id=cls.hidden.unique_id)
+
+        def on_progress(current: int, total: int, _line: str) -> None:
+            progress_bar.update_absolute(current, max(1, total))
+
+        config = load_vpipe_config(Path(__file__).resolve().parent)
+        result = VPipeRunner(config).run(
+            request,
+            output_root=output_root,
+            progress=on_progress,
+            cancelled=comfy.model_management.processing_interrupted,
+            reuse_completed=reuse_completed,
+        )
+        video = InputImpl.VideoFromFile(str(result.output_path))
+        relative = result.output_path.relative_to(output_root)
+        summary = (
+            f"job={result.job_id} | elapsed={result.elapsed_seconds:.1f}s | "
+            f"engine=vpipe-q8-ref2va | refs={len(tuple(references))} | "
+            f"audio={audio_mode} | output={relative}"
         )
         return io.NodeOutput(
             video,
@@ -707,6 +855,7 @@ class H3MacExtension(ComfyExtension):
             H3AddMediaFileReference,
             H3GenerateVideo,
             H3GenerateVideoVPipe,
+            H3GenerateVideoVPipeRef,
             H3AssembleStoryboard,
             H3AddFixedNarration,
         ]

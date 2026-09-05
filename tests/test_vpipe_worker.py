@@ -66,6 +66,90 @@ def test_worker_rejects_nonempty_but_invalid_partial_video(tmp_path: Path, monke
     assert VPipeWorker._valid_recovered_video(partial) is False
 
 
+def test_runner_repairs_queued_status_missing_durable_ticket(tmp_path: Path):
+    project = tmp_path / "project"
+    output = project / "runtime" / "ComfyUI" / "output"
+    output.mkdir(parents=True)
+    binary, work_dir = make_fake_vpipe(tmp_path)
+    image = tmp_path / "cat.png"
+    image.write_bytes(b"image")
+    config = worker_config(binary, work_dir, project)
+    worker = VPipeWorker(
+        project,
+        vpipe_config=config,
+        bridge_config=BridgeConfig(
+            project_root=project,
+            h3_binary=tmp_path / "unused-h3",
+            model_root=tmp_path / "unused-model",
+        ),
+    )
+    worker.heartbeat()
+
+    request = VPipeRequest(
+        prompt="The same cat sings toward the camera.",
+        first_frame=image,
+        resource_profile="max",
+    )
+    runner = VPipeRunner(config)
+    job_id = runner._job_id(request)
+    job_dir = output / config.output_subdir / job_id
+    job_dir.mkdir(parents=True)
+    pipeline = job_dir / "pipeline.vpipeline"
+    pipeline.write_text("{}", encoding="utf-8")
+    status = job_dir / "vpipe-status.json"
+    status.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "job_id": job_id,
+                "state": "queued",
+                "progress": 1,
+                "force_rerun": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    errors: list[BaseException] = []
+
+    def attach_client() -> None:
+        try:
+            runner.run(request, output_root=output)
+        except BaseException as exc:
+            errors.append(exc)
+
+    client = threading.Thread(target=attach_client)
+    client.start()
+    ticket_path = worker.queue_root / f"{job_id}.json"
+    deadline = time.monotonic() + 5.0
+    while not ticket_path.is_file():
+        if time.monotonic() >= deadline:
+            raise AssertionError("runner did not repair the missing durable ticket")
+        time.sleep(0.02)
+
+    ticket = json.loads(ticket_path.read_text(encoding="utf-8"))
+    assert ticket["job_id"] == job_id
+    assert ticket["pipeline_sha256"] == hashlib.sha256(b"{}").hexdigest()
+    repaired = json.loads(status.read_text(encoding="utf-8"))
+    assert repaired["state"] == "queued"
+    assert repaired["message"] == "Recovered missing durable worker ticket"
+
+    status.write_text(
+        json.dumps(
+            {
+                **repaired,
+                "state": "cancelled",
+                "error": "test finished observing the repaired ticket",
+            }
+        ),
+        encoding="utf-8",
+    )
+    client.join(timeout=5)
+    assert not client.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], InterruptedError)
+
+
 @pytest.mark.skipif(platform.system() != "Darwin", reason="launch identity is macOS-only")
 def test_launchd_worker_completes_durable_ticket_and_runner_observes_it(
     tmp_path: Path, monkeypatch

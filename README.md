@@ -40,12 +40,12 @@ This project exposes two independent inference chains. Using ComfyUI does not re
 
 ```text
 Original BF16: ComfyUI → H3 Generate Video (Metal) node → h3.c → MiniMax H3 FL2VA/Ref2VA BF16
-Quantized Q8:  ComfyUI → H3 Generate with vpipe Q8 node → launchd worker → vpipe Q8
+Quantized Q8:  ComfyUI → H3 Generate with vpipe Q8 FL2VA/Ref2VA node → launchd worker → vpipe Q8
 ```
 
 | Download option | Backend and weights | Capability | Disk requirement | Best fit |
 |---|---|---|---:|---|
-| `1) vpipe Q8 FL2VA` | vpipe + Q8 | First-frame FL2VA is required; no text-only generation or this bridge's ordered multi-reference Ref2VA chain | About 120 GiB free while preparing, about 67.5 GiB final | 24/48 GB Macs prioritizing speed and space |
+| `1) vpipe Q8 FL2VA` | vpipe + Q8 | First-frame FL2VA; optionally add the separate Ref2VA Q8 bundle for ordered image/video/audio references | About 120 GiB free while preparing, about 67.5 GiB final before optional Ref2VA | 24/48 GB Macs prioritizing speed and space |
 | `2) h3.c Ref2VA BF16` | h3.c + official original BF16 | Ordered image, video, and audio references; automatically includes required FL2VA base files | About 196 GiB final; start with at least 220 GiB free | **Choose this for original weights plus multi-reference work on a 48 GB M5 Pro** |
 | `3) h3.c FL2VA BF16` | h3.c + official original BF16 | Text-to-video or first/last-frame anchors; no ordered multi-reference chain | About 134 GiB final; start with at least 150 GiB free | Advanced users who explicitly do not need Ref2VA |
 
@@ -130,6 +130,8 @@ For the easiest start after preparing model option 1, open `Workflow > Browse Te
 
 After model option 1 completes, load `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json`. Each `H3 · Generate with vpipe Q8` node renders a silent shot from a first-frame image; `H3 · Assemble storyboard MP4` joins the shots; `H3 · Add one fixed narration voice` applies every `seconds|dialogue` cue after assembly. The public template defaults to the offline `macOS:Tingting` voice. Neural voices are opt-in and send dialogue text to their online speech service. `Keep ambience` defaults off so independently generated H3 voices cannot overlap the final narration.
 
+For local Q8 multi-reference work, prepare FL2VA first and then run `./Prepare\ vpipe\ Ref2VA\ Q8.command low`. Build an ordered chain with the image/audio/video reference nodes and connect it to `H3 · Generate from references with vpipe Q8 (Metal)`. Audio cannot be the only reference. The node defaults to `low`, 8 steps and a 1024-pixel image-reference short edge to keep the first workflow practical on a 24/48 GB Mac.
+
 The node uses the project-local verified vpipe build first and submits durable tickets to a launchd-owned worker instead of making vpipe a disposable ComfyUI child. The worker stays online in a clear `degraded` state until the complete Q8 model and both pinned LoRAs pass verification. Advanced users can override paths and low-power memory-pool limits in `config.json`.
 
 The shortest manual vpipe graph is:
@@ -144,7 +146,7 @@ The public template uses `960×544`, 124 frames, six Turbo steps, silent generat
 
 For a higher-resolution final, select `turbo_highres_4step`, use at least `1152×640`, and set **exactly four steps**. Width and height must be multiples of 32, each between 256 and 1344; total canvas area may not exceed `1344×768`. This integration accepts 22–362 frames at 24 fps. Longer stories should still be split into reusable shots and assembled afterward.
 
-The ordered multi-image reference nodes and the `preview / quality / reference` profiles below belong to the optional h3.c BF16/Ref2VA path, not the recommended vpipe Q8 FL2VA node. See the advanced h3.c workflow only after installing model option 2.
+The `preview / quality / reference` profiles below belong to h3.c BF16. Ordered reference nodes work with either the vpipe Q8 Ref2VA node after its separate Q8 bundle is prepared, or the h3.c BF16 Ref2VA node after installing model option 2.
 
 See the [storyboard tutorial](docs/STORYBOARD.md) for shot planning and assembly.
 
@@ -171,6 +173,7 @@ A BF16 installation is valid when `Doctor.command` exits zero and confirms FL2VA
 | H3 Add Local Media Reference | Append local image, audio, video, or video-plus-audio paths |
 | H3 Generate Video (Metal) | Run h3.c and return native ComfyUI VIDEO, job path, and summary |
 | H3 Generate with vpipe Q8 (Metal) | Run the optional Q8 FL2VA backend; silent output is the recommended fixed-voice workflow |
+| H3 Generate from references with vpipe Q8 (Metal) | Run Q8 Ref2VA from ordered image/video/audio references for identity- and song-driven shots |
 | H3 Assemble Storyboard MP4 | Join 2–8 completed jobs in order without re-running H3 or re-encoding video |
 | H3 Add One Fixed Narration Voice | Add timed dialogue to the assembled story with one consistent macOS voice |
 
@@ -261,7 +264,7 @@ The pinned h3.c revision already selects its native resident INT8 MLP/QKV/attent
 - Apple Silicon macOS only.
 - h3.c requires the original directory layout. Ref2VA also requires the FL2VA base files.
 - Ordered Ref2VA references cannot be mixed with first/last-frame anchors.
-- vpipe Q8 currently supports first-frame FL2VA in this bridge; use h3.c BF16 for ordered multi-reference Ref2VA workflows.
+- vpipe Q8 supports first-frame FL2VA and, after separate Ref2VA Q8 preparation, ordered multi-reference Ref2VA. h3.c BF16 remains the original-weight path.
 
 ## Development
 

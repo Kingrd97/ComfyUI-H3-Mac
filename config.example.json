@@ -7,6 +7,8 @@
   "vpipe_binary": "runtime/bin/vpipe",
   "vpipe_work_dir": "runtime/vpipe-work",
   "vpipe_model": "local/MiniMax-H3-FL2VA-8bit",
+  "vpipe_ref_model": "local/MiniMax-H3-Ref2VA-8bit",
+  "vpipe_ref_lora": "lightx2v/Minimax-h3-Turbo-ref2va-4step-split",
   "vpipe_lora": "larryvrh/MiniMax-H3-Turbo-Lora-v4-600-ema",
   "vpipe_lora_768p": "lightx2v/Minimax-h3-Turbo-4step-768p",
   "vpipe_video_bitrate": 10000000,

@@ -40,12 +40,12 @@ macOS 没有可通用于任意前台 App 的真实掉帧计数接口；守护器
 
 ```text
 原始 BF16：ComfyUI → H3 · 生成视频（Metal）节点 → h3.c → MiniMax H3 FL2VA/Ref2VA BF16
-量化 Q8： ComfyUI → H3 · 使用 vpipe Q8 生成节点 → launchd worker → vpipe Q8
+量化 Q8： ComfyUI → H3 · 使用 vpipe Q8 FL2VA/Ref2VA 生成节点 → launchd worker → vpipe Q8
 ```
 
 | 下载选项 | 后端与权重 | 适用能力 | 磁盘需求 | 适合谁 |
 |---|---|---|---:|---|
-| `1) vpipe Q8 FL2VA` | vpipe + Q8 | 必须提供首帧的 FL2VA；不支持纯文生或本项目的有序多参考 Ref2VA 链 | 首次需约 120 GiB 空间，完成后约 67.5 GiB | 24/48GB Mac 的速度/空间优先路线 |
+| `1) vpipe Q8 FL2VA` | vpipe + Q8 | 首帧 FL2VA；如需有序图片/视频/音频参考，可再准备独立 Ref2VA Q8 包 | 首次需约 120 GiB，完成后约 67.5 GiB，不含可选 Ref2VA | 24/48GB Mac 的速度/空间优先路线 |
 | `2) h3.c Ref2VA BF16` | h3.c + 官方原始 BF16 | 有序多图、视频和音频参考；会自动包含必需的 FL2VA 基础 | 实际约 196 GiB，下载前建议至少 220 GiB 可用 | **48GB M5 Pro 想要原始权重与多参考时选这个** |
 | `3) h3.c FL2VA BF16` | h3.c + 官方原始 BF16 | 文生视频或首/尾帧锚定；不能接有序多参考 | 约 134 GiB，建议至少 150 GiB 可用 | 明确不需要 Ref2VA 的高级用户 |
 
@@ -130,6 +130,8 @@ git pull --ff-only
 
 模型选项 1 完成后，载入 `example_workflows/H3_vpipe_Q8_2_Shot_Fixed_Voice.json`。每个 `H3 · 使用 vpipe Q8 生成` 节点根据首帧生成静音镜头；合并后再按每行 `秒数|台词` 统一配音。公开模板默认使用完全离线的 `macOS:Tingting`；Neural 音色为显式联网选项，会把台词发送到对应语音服务。“保留环境声”默认关闭，避免多个镜头的原人声与最终旁白叠加。
 
+本地 Q8 多参考任务需先完成 FL2VA，再运行 `./Prepare\ vpipe\ Ref2VA\ Q8.command low`。用图片/音频/视频节点建立有序素材链，并连接到 `H3 · 使用 vpipe Q8 多参考生成（Metal）`。音频不能是唯一参考。节点默认 `low`、8 步、参考图短边 1024，优先保证 24/48GB Mac 上首次使用可控。
+
 节点会优先使用项目内经过验证的 vpipe，并把持久化任务票据提交给 launchd worker。Q8 与两套固定版本 LoRA 未通过完整性校验前，worker 会明确显示 `degraded/等待资产`，不会到 0% 后才模糊失败。高级用户仍可在 `config.json` 覆盖路径和 low/auto 的内存池限制。
 
 手动搭建时，最短的 vpipe 管线是：
@@ -144,7 +146,7 @@ git pull --ff-only
 
 高清成片可选 `turbo_highres_4step`，分辨率从 `1152×640` 起，且必须设为**恰好 4 步**。宽高均需是 32 的倍数、单边介于 256–1344，总像素面积不得超过 `1344×768`。本集成支持 22–362 帧、24 fps；更长故事仍建议拆成可复用的单镜头后合并。
 
-“新建/添加多图参考”节点以及 `preview / quality / reference` 档位属于可选的 h3.c BF16/Ref2VA 路线，不是推荐的 vpipe Q8 FL2VA 节点。只有安装模型选项 2 后再使用该高级工作流。完整步骤见[中文分镜教程](docs/STORYBOARD_zh-CN.md)，基础教程见 [docs/QUICKSTART_zh.md](docs/QUICKSTART_zh.md)。
+`preview / quality / reference` 档位只属于 h3.c BF16。“新建/添加参考素材”既可连接另行准备的 vpipe Q8 Ref2VA 节点，也可连接安装模型选项 2 后的 h3.c BF16 Ref2VA 节点。完整步骤见[中文分镜教程](docs/STORYBOARD_zh-CN.md)，基础教程见 [docs/QUICKSTART_zh.md](docs/QUICKSTART_zh.md)。
 
 ### 原始 BF16 / Ref2VA 首次工作流
 
@@ -169,6 +171,7 @@ BF16 安装成功的判定标准是 `Doctor.command` 总体返回 0，并确认 
 | H3 · 添加本地媒体参考 | 添加视频、带音视频、独立音轨或本地图片路径 |
 | H3 · 生成视频（Metal） | 调用 h3.c，输出原生 ComfyUI VIDEO、任务目录和摘要 |
 | H3 · 使用 vpipe Q8 生成（Metal） | 调用可选 Q8 FL2VA 后端；推荐静音生成，最后统一配音 |
+| H3 · 使用 vpipe Q8 多参考生成（Metal） | 调用 Q8 Ref2VA，根据有序图片、视频和音频参考保持身份并驱动表演 |
 | H3 · 合并分镜 MP4 | 按顺序拼接 2–8 个已完成任务，不重跑 H3，也不重新压缩视频 |
 | H3 · 添加统一固定配音 | 合并后按时间添加台词，全片始终使用同一个 macOS 音色 |
 
@@ -259,7 +262,7 @@ ComfyUI 是可视化节点画布、执行服务、API、队列、历史记录和
 - 只支持 Apple Silicon macOS。
 - h3.c 要求完整原始模型目录；Ref2VA 还需要 FL2VA 基础文件。
 - Ref2VA 有序参考不能与首/尾帧锚点混用。
-- 当前 vpipe Q8 集成支持首帧 FL2VA；多图有序 Ref2VA 使用 h3.c BF16。
+- vpipe Q8 支持首帧 FL2VA；另行完成 Ref2VA Q8 准备后，也支持有序多参考。h3.c BF16 仍是官方原始权重路线。
 
 ## 开发
 

@@ -13,6 +13,7 @@ EXPECTED_NODES = {
     "H3AddMediaFileReference",
     "H3GenerateVideo",
     "H3GenerateVideoVPipe",
+    "H3GenerateVideoVPipeRef",
     "H3AddFixedNarration",
     "H3AssembleStoryboard",
 }

@@ -43,6 +43,13 @@ _PROCESS_SIGNATURE_ATTEMPTS = 5
 _PROCESS_SIGNATURE_RETRY_SECONDS = 0.05
 
 
+def _is_apple_silicon() -> bool:
+    """Keep the platform probe narrow so tests never patch global ``os.uname``."""
+
+    identity = os.uname()
+    return identity.sysname == "Darwin" and identity.machine == "arm64"
+
+
 def _write_generation_lock_metadata(
     lock_fd: int,
     *,
@@ -406,7 +413,7 @@ class H3Runner:
         return binary
 
     def validate(self, request: H3Request) -> None:
-        if os.uname().sysname != "Darwin" or os.uname().machine != "arm64":
+        if not _is_apple_silicon():
             raise RuntimeError("h3.c requires an Apple Silicon Mac (arm64).")
         self._resolved_h3_binary()
         model_dir = self.config.model_dir(request.task)

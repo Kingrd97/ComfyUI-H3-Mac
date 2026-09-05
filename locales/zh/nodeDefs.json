@@ -88,7 +88,7 @@
       "width": {"name": "宽度", "tooltip": "输出宽度，使用 32 的倍数。"},
       "height": {"name": "高度", "tooltip": "输出高度，使用 32 的倍数。"},
       "frames": {"name": "帧数", "tooltip": "124 帧在 24 FPS 下约为 5.18 秒。"},
-      "steps": {"name": "步数", "tooltip": "Turbo LoRA 的推荐配方为 6 步，更多步数不一定更好。"},
+      "steps": {"name": "去噪评估次数（NFE）", "tooltip": "这里填写模型实际评估次数，不是调度端点数。Turbo LoRA 的推荐配方为 6 NFE，更多不一定更好。"},
       "audio_mode": {"name": "声音模式", "tooltip": "推荐静音，合并后统一配音；H3 联合声音可能在不同镜头改变音色。"},
       "resource_profile": {"name": "资源档位", "tooltip": "low 始终按后台优先级推进；auto 通常后台运行、检测到前台卡顿时暂停、持续空闲后满速；max 使用正常优先级。"},
       "seed": {"name": "随机种子", "tooltip": "迭代同一镜头时固定种子以便比较。"},
@@ -99,6 +99,27 @@
       "0": {"name": "视频", "tooltip": "生成的 MP4 视频。"},
       "1": {"name": "任务目录", "tooltip": "连接到“合并分镜 MP4”节点。"},
       "2": {"name": "运行摘要", "tooltip": "后端、耗时、声音模式和输出路径。"}
+    }
+  },
+  "H3GenerateVideoVPipeRef": {
+    "display_name": "H3 · 使用 vpipe Q8 多参考生成（Metal）",
+    "description": "使用 vpipe 的 Q8 Metal 后端，根据有序图片、视频和音频参考生成 Ref2VA 镜头。",
+    "inputs": {
+      "prompt": {"name": "提示词", "tooltip": "描述稳定角色、分时表演动作、镜头、灯光和需要避免的问题。"},
+      "references": {"name": "有序参考素材", "tooltip": "先放角色身份图，最后放锁定的歌曲音频；音频不能是唯一参考。"},
+      "width": {"name": "宽度", "tooltip": "输出宽度，使用 32 的倍数。"},
+      "height": {"name": "高度", "tooltip": "输出高度，使用 32 的倍数。"},
+      "frames": {"name": "帧数", "tooltip": "124 帧在 24 FPS 下约为 5.18 秒。"},
+      "steps": {"name": "去噪评估次数（NFE）", "tooltip": "这里填写模型实际评估次数，不是调度端点数。vpipe Ref2VA 的可靠起点是 8 NFE。"},
+      "audio_mode": {"name": "输出声音", "tooltip": "联合声音有助于动作同步；组片时仍应用同一份锁定歌曲母带替换。"},
+      "resource_profile": {"name": "资源档位", "tooltip": "白天默认 low；auto 检测到前台卡顿时可暂停、持续空闲后提速；max 使用正常优先级。"},
+      "seed": {"name": "随机种子", "tooltip": "比较提示词修改时保持种子不变。"},
+      "reuse_completed": {"name": "复用相同的已完成任务", "tooltip": "相同任务已有有效成片时跳过推理。"}
+    },
+    "outputs": {
+      "0": {"name": "视频", "tooltip": "生成的 MP4 视频。"},
+      "1": {"name": "任务目录", "tooltip": "连接到“合并分镜 MP4”节点。"},
+      "2": {"name": "运行摘要", "tooltip": "后端、参考数量、耗时和输出路径。"}
     }
   },
   "H3AssembleStoryboard": {

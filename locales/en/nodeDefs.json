@@ -88,7 +88,7 @@
       "width": {"name": "Width", "tooltip": "Output width; use a multiple of 32."},
       "height": {"name": "Height", "tooltip": "Output height; use a multiple of 32."},
       "frames": {"name": "Frames", "tooltip": "124 frames is about 5.18 seconds at 24 FPS."},
-      "steps": {"name": "Steps", "tooltip": "The Turbo LoRA recipe uses 6 steps; more is not automatically better."},
+      "steps": {"name": "Denoising evaluations (NFE)", "tooltip": "Actual model evaluations, not scheduler endpoints. The Turbo LoRA recipe uses 6 NFE; more is not automatically better."},
       "audio_mode": {"name": "Audio mode", "tooltip": "Use silent for fixed TTS after assembly. Joint H3 audio may change voice between shots."},
       "resource_profile": {"name": "Resource profile", "tooltip": "Low always progresses at background priority; auto normally runs in background, pauses on detected foreground jank, and boosts after sustained idle; max runs at normal priority."},
       "seed": {"name": "Seed", "tooltip": "Keep a seed fixed while refining a shot."},
@@ -99,6 +99,27 @@
       "0": {"name": "Video", "tooltip": "Generated MP4 video."},
       "1": {"name": "Job directory", "tooltip": "Connect this to Assemble Storyboard MP4."},
       "2": {"name": "Run summary", "tooltip": "Engine, elapsed time, audio mode, and output path."}
+    }
+  },
+  "H3GenerateVideoVPipeRef": {
+    "display_name": "H3 · Generate from references with vpipe Q8 (Metal)",
+    "description": "Generate a Ref2VA shot from ordered image, video, and audio references with vpipe's Q8 Metal backend.",
+    "inputs": {
+      "prompt": {"name": "Prompt", "tooltip": "Describe stable subjects, timed performance, camera, lighting, and failures to avoid."},
+      "references": {"name": "Ordered references", "tooltip": "Add identity images first and the locked song audio last. Audio cannot be the only reference."},
+      "width": {"name": "Width", "tooltip": "Output width, as a multiple of 32."},
+      "height": {"name": "Height", "tooltip": "Output height, as a multiple of 32."},
+      "frames": {"name": "Frames", "tooltip": "124 frames is about 5.18 seconds at 24 FPS."},
+      "steps": {"name": "Denoising evaluations (NFE)", "tooltip": "Actual model evaluations, not scheduler endpoints. The verified vpipe Ref2VA starting point is 8 NFE."},
+      "audio_mode": {"name": "Output audio", "tooltip": "Joint audio helps performance sync; replace it with the same locked music master during assembly."},
+      "resource_profile": {"name": "Resource profile", "tooltip": "Low is the safe default for daytime work; auto may pause on foreground jank and boost while idle; max uses normal priority."},
+      "seed": {"name": "Seed", "tooltip": "Keep the seed fixed while comparing prompt changes."},
+      "reuse_completed": {"name": "Reuse identical completed job", "tooltip": "Skip inference when the same completed shot already exists."}
+    },
+    "outputs": {
+      "0": {"name": "Video", "tooltip": "Generated MP4 video."},
+      "1": {"name": "Job directory", "tooltip": "Connect this to Assemble Storyboard MP4."},
+      "2": {"name": "Run summary", "tooltip": "Engine, reference count, elapsed time, and output path."}
     }
   },
   "H3AssembleStoryboard": {
